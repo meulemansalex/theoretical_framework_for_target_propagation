@@ -1,10 +1,11 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,8 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+In this python file, the layer classes for layers with direct (skip) feedback
+connections should be implemented.
+
+"""
+
 from lib.dtp_layers import DTPLayer
-from lib.mndtp_layers import MNDTP2DRLayer
+from lib.dtpdrl_layers import DTPDRLLayer
 from lib.networks import BPNetwork
 import torch
 import torch.nn as nn
@@ -21,15 +28,14 @@ import numpy as np
 import torch.nn.functional as F
 from lib import utils
 
-class DirectKernelDTPLayer(MNDTP2DRLayer):
+
+class DDTPRHLLayer(DTPDRLLayer):
     """
     A class for target propagation layers with direct feedback connections from
-    the output layer, that use a shared large hidden layer (kernel trick) to
-    blow up the dimension of the feedback. The feedback path will produce
-    targets in the voltage domain, that can be directly used for the MNDTP
-    updates.
+    the output layer, that use a shared large hidden layer to
+    blow up the dimension of the feedback.
 
-    Note that the hidden feedback layer for the kernel trick will not be
+    Note that the hidden feedback layer will not be
     implemented in the layer class but in the corresponding network class
     instead, as this hidden feedback layer needs to be shared by all layers
     of the network.
@@ -100,7 +106,7 @@ class DirectKernelDTPLayer(MNDTP2DRLayer):
         self._recurrent_input = recurrent_input
         # Now we need to overwrite the initialization of the feedback weights,
         # as we now need Q_i instead of Q_{i-1}, and a direct connection from
-        # the hidden feedback layer to thi, initialization='orthogonal's layer
+        # the hidden feedback layer to hi
 
         if recurrent_input:
             n_fb = out_features + hidden_feedback_dimension
@@ -141,88 +147,47 @@ class DirectKernelDTPLayer(MNDTP2DRLayer):
             h += self.feedbackbias.unsqueeze(0).expand_as(h)
         return self.feedback_activationfunction(h)
 
-    def backward(self, h_hidden_corrupted, a_current, h_hidden_noncorrupted):
+    def backward(self, h_hidden_target, h_current, h_hidden_activation):
         """
         Compute the target activation for the current layer in a DTP-like
         fashion (see pg. 11), based on the output target and the output activation.
         Args:
-            h_hidden_corrupted (torch.Tensor): the output target that is already
-                propagated to the large shared hidden feedback layer. So
-                actually it is not the output target, but the transformed
-                output target to the large hidden feedback dimension. If you
-                have a better name, feel free!
-            a_current (torch.Tensor): the linear activations of the current
+            h_hidden_target (torch.Tensor): the output target that is already
+                propagated to the large shared hidden feedback layer.
+            h_current (torch.Tensor): the activations of the current
                 layer, used for the DTP correction term
-            h_hidden_noncorrupted (torch.Tensor): output forward activation
+            h_hidden_activation (torch.Tensor): output forward activation
                 transformed to the hidden feedback layer (same comment as above)
                 , used for the DTP correction term.
 
         Returns: a_target_current: The mini-batch of target activations for the
             current layer.
         """
-        a_target = self.propagate_backward(h_hidden_corrupted)
-        a_tilde = self.propagate_backward(h_hidden_noncorrupted)
-        a_target_current = a_target + a_current - a_tilde
+        h_target = self.propagate_backward(h_hidden_target)
+        h_tilde = self.propagate_backward(h_hidden_activation)
+        h_target_current = h_target + h_current - h_tilde
 
-        return a_target_current
-
-    def compute_feedback_gradients(self, a_current_corrupted,
-                                   h_fb_hidden_corrupted,
-                                   h_fb_hidden_noncorrupted,
-                                   sigma):
-        """
-        Compute the gradients of the feedback weights and bias, based on the
-        difference reconstruction loss (p16 in theoretical framework) with
-        corrupted linear activations (a) as outlined in strategy 1 on page 19.
-        The gradients will be saved in the .grad attributes of the feedback
-        parameters.
-
-        Args:
-            a_current_corrupted (torch.Tensor): the corrupted linear activation
-                of the current layer
-            h_fb_hidden_corrupted (torch.Tensor): The (nonlinear) activation (rate) of the
-                hidden feedback layer resulting from the corrupted output activation
-                (that on his turn resulted from the forward propagation of the
-                corrupted linear activation of the current layer)
-            h_fb_hidden_noncorrupted (torch.Tensor): the (nonlinear) activation (rate) of the
-                hidden feedback layer resulting from the non-corrputed output
-                activation (that on his turn resulted from the forward
-                propagation of the non-corrupted linear activation of the
-                current layer)
-
-        """
-        self.set_feedback_requires_grad(True)
-
-        a_current_noncorrupted = self.linearactivations
-
-        a_current_reconstructed = self.backward(
-            h_fb_hidden_corrupted,
-            a_current_noncorrupted,
-            h_fb_hidden_noncorrupted,
-        )
-
-        if sigma <= 0:
-            raise ValueError('Sigma should be greater than zero when using the'
-                             'difference reconstruction loss. Given sigma = '
-                             '{}'.format(sigma))
-        scale = 1/sigma**2
-        reconstruction_loss = scale * F.mse_loss(a_current_reconstructed,
-                                         a_current_corrupted)
-
-        self.save_feedback_gradients(reconstruction_loss)
-
-        self.set_feedback_requires_grad(False)
-
-
-class DKDTP2Layer(DirectKernelDTPLayer):
-    """ Direct target propagation layer that uses a shared hidden feedback
-    layer and provides targets for the nonlinear hidden layer activations."""
+        return h_target_current
 
 
     def compute_feedback_gradients(self, h_current_corrupted,
                                    h_fb_hidden_corrupted,
                                    h_fb_hidden_noncorrupted,
                                    sigma):
+        """
+        Compute the feedback gradients according to the DRL and save the gradients
+        in the .grad attributes of the feedback weights.
+        Args:
+            h_current_corrupted: noise corrupted activation of current layer
+            h_fb_hidden_corrupted:  the hidden fb layer activation resulting
+                from h_current_corrupted
+            h_fb_hidden_noncorrupted: the hidden fb layer activation resulting
+                from the uncorrupted current layer activation.
+            sigma: std of noise corruption
+
+        Returns: saves gradients in .grad attribute of feedback weights
+
+        """
         self.set_feedback_requires_grad(True)
 
         h_current_noncorrupted = self.activations
@@ -246,29 +211,11 @@ class DKDTP2Layer(DirectKernelDTPLayer):
 
         self.set_feedback_requires_grad(False)
 
-    def compute_forward_gradients(self, h_target, h_previous, norm_ratio=1.):
-        """ Do a gradient step based on the L2 loss between target and
-        layer activation. (Ignore the norm_ratio)"""
-        if self.forward_activation == 'linear':
-            teaching_signal = 2 * (self.activations - h_target)
-        else:
-            vectorized_jacobians = self.compute_vectorized_jacobian(
-                self.linearactivations)
-            teaching_signal = 2 * vectorized_jacobians * (
-                        self.activations - h_target)
-        batch_size = h_target.shape[0]
-        bias_grad = teaching_signal.mean(0)
-        weights_grad = 1. / batch_size * teaching_signal.t().mm(h_previous)
 
-        if self.bias is not None:
-            self._bias.grad = bias_grad.detach()
-        self._weights.grad = weights_grad.detach()
-
-
-class DMLPDTPLayer(MNDTP2DRLayer):
-    """ Direct MLP Difference Target Propagation Layer. A layer that uses
-    an MLP as direct connection from the output layer towards itself in order
-    to propagate target signals."""
+class DDTPMLPLayer(DTPDRLLayer):
+    """ Direct DTP layer with a fully trained multilayer perceptron (MLP) as direct feedback connections.
+    DDTP-linear is a special case of DDTPMLP with a single-layer linear MLP as direct
+     feedback connection."""
 
     def __init__(self, in_features, out_features, size_output, bias=True,
                  forward_requires_grad=False, forward_activation='tanh',
@@ -314,6 +261,7 @@ class DMLPDTPLayer(MNDTP2DRLayer):
         self._feedbackbias = None
         self._recurrent_input = recurrent_input
         self._is_output = is_output
+        self._has_hidden_fb_layers = size_hidden_fb is not None
 
         if fb_hidden_activation is None:
             fb_hidden_activation = feedback_activation
@@ -334,6 +282,21 @@ class DMLPDTPLayer(MNDTP2DRLayer):
         else:
             self._fb_mlp = None # output does not need to have a feedback path
 
+    @property
+    def feedbackweights(self):
+        if not self._has_hidden_fb_layers:
+            return self._fb_mlp.layers[0].weight
+        else:
+            return None
+
+    @property
+    def feedbackbias(self):
+        if not self._has_hidden_fb_layers:
+            return self._fb_mlp.layers[0].bias
+        else:
+            return None
+
+
     def set_feedback_requires_grad(self, value):
         """
         Sets the 'requires_grad' attribute of the all the parameters in the
@@ -351,45 +314,47 @@ class DMLPDTPLayer(MNDTP2DRLayer):
             in_tensor = torch.cat((output_target, self.activations), dim=1)
         else:
             in_tensor = output_target
-        a = self._fb_mlp(in_tensor)
-        return a
+        h = self._fb_mlp(in_tensor)
+        return h
 
-    def backward(self, output_target, a_current, output_lin_activation):
+    def backward(self, output_target, h_current, output_activation):
         """
         Compute the target linear activation for the current layer in a DTP-like
         fashion, based on the linear output target and the output linear
         activation
         Args:
             output_target: output target
-            a_current: linear activation of the current layer
-            output_lin_activation: Output linear activation
+            h_current: activation of the current layer
+            output_activation: Output activation
 
         Returns: target for linear activation of this layer
 
         """
-        a_target = self.propagate_backward(output_target)
-        a_tilde = self.propagate_backward(output_lin_activation)
-        a_target_current = a_target + a_current - a_tilde
+        h_target = self.propagate_backward(output_target)
+        h_tilde = self.propagate_backward(output_activation)
+        h_target_current = h_target + h_current - h_tilde
 
-        return a_target_current
+        return h_target_current
 
-    def compute_feedback_gradients(self, a_current_corrupted,
+    def compute_feedback_gradients(self, h_current_corrupted,
                                    output_corrupted,
                                    output_noncorrupted,
                                    sigma):
+
         """
         Compute the gradients of the feedback weights and bias, based on the
-        difference reconstruction loss (p16 in theoretical framework) with
-        corrupted linear activations (a) as outlined in strategy 1 on page 19.
+        difference reconstruction loss.
         The gradients will be saved in the .grad attributes of the feedback
         parameters.
+
         """
+
         self.set_feedback_requires_grad(True)
 
-        a_current_noncorrupted = self.linearactivations
+        h_current_noncorrupted = self.activations
 
-        a_current_reconstructed = self.backward(output_corrupted,
-                                                a_current_noncorrupted,
+        h_current_reconstructed = self.backward(output_corrupted,
+                                                h_current_noncorrupted,
                                                 output_noncorrupted)
 
         if sigma <= 0:
@@ -397,8 +362,8 @@ class DMLPDTPLayer(MNDTP2DRLayer):
                              'difference reconstruction loss. Given sigma = '
                              '{}'.format(sigma))
         scale = 1/sigma**2
-        reconstruction_loss = scale * F.mse_loss(a_current_reconstructed,
-                                         a_current_corrupted)
+        reconstruction_loss = scale * F.mse_loss(h_current_reconstructed,
+                                         h_current_corrupted)
 
         self.save_feedback_gradients(reconstruction_loss)
 
@@ -425,52 +390,17 @@ class DMLPDTPLayer(MNDTP2DRLayer):
 
     def save_logs(self, writer, step, name, no_gradient=False,
                   no_fb_param=False):
-        DTPLayer.save_logs(self=self, writer=writer, step=step,
+        if self._has_hidden_fb_layers or self._is_output:
+            DTPLayer.save_logs(self=self, writer=writer, step=step,
                            name=name, no_gradient=no_gradient,
                            no_fb_param=True)
+        else:
+            DTPLayer.save_logs(self=self, writer=writer, step=step,
+                               name=name, no_gradient=no_gradient,
+                               no_fb_param=False)
 
 
-class DMLPDTP2Layer(DMLPDTPLayer):
-    """ Direct MLP DTP layer that provides targets for the nonlinear hidden
-    layer activations."""
-
-    def compute_feedback_gradients(self, h_current_corrupted,
-                                   output_corrupted,
-                                   output_noncorrupted,
-                                   sigma):
-
-        """ See doc of DMLPDTPLayer with corresponding method. Now learn
-        to provide a target for the nonlinear hidden layer activation, so
-        we use h instead of a."""
-
-        self.set_feedback_requires_grad(True)
-
-        h_current_noncorrupted = self.activations
-
-        h_current_reconstructed = self.backward(output_corrupted,
-                                                h_current_noncorrupted,
-                                                output_noncorrupted)
-
-        if sigma <= 0:
-            raise ValueError('Sigma should be greater than zero when using the'
-                             'difference reconstruction loss. Given sigma = '
-                             '{}'.format(sigma))
-        scale = 1/sigma**2
-        reconstruction_loss = scale * F.mse_loss(h_current_reconstructed,
-                                         h_current_corrupted)
-
-        self.save_feedback_gradients(reconstruction_loss)
-
-        self.set_feedback_requires_grad(False)
-
-    def compute_forward_gradients(self, h_target, h_previous, norm_ratio=1.):
-            DKDTP2Layer.compute_forward_gradients(self=self,
-                                                  h_target=h_target,
-                                                  h_previous=h_previous,
-                                                  norm_ratio=norm_ratio)
-
-
-class DDTPControlLayer(DMLPDTP2Layer):
+class DDTPControlLayer(DDTPMLPLayer):
     """ Direct DTP layer that does not use the difference trick in its
     reconstruction loss, as a control for the other methods."""
     def compute_feedback_gradients(self, h_current_corrupted,
@@ -488,22 +418,6 @@ class DDTPControlLayer(DMLPDTP2Layer):
 
         self.set_feedback_requires_grad(False)
 
-class DMLPDTP3Layer(DMLPDTPLayer):
-    """ Identical to DMLDTPLayer, except that not a minimal norm update is used,
-    but a normal gradient descent step on the linear hidden layer targets."""
-
-    def compute_minimal_norm_update(self, teaching_signal, h_previous,
-                                    norm_ratio):
-        """ Overwrite this method such that we don't use the minimal norm
-        update but a normal gradient descent update."""
-
-        batch_size = teaching_signal.shape[0]
-        weights_grad = 1./batch_size*teaching_signal.t().mm(h_previous)
-        self._weights.grad = weights_grad.detach()
-
-        if self.bias is not None:
-            bias_grad = teaching_signal.mean(0)
-            self._bias.grad = bias_grad.detach()
 
 
 

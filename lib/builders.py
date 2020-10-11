@@ -1,10 +1,11 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,56 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from lib import networks, direct_feedback_networks
+from lib import networks, direct_feedback_networks, conv_network
 import torch
 from torch.utils.data import Dataset
 import numpy as np
 import random
-
-
-def regression_cubic_poly(num_train=20, num_test=100, train_domain=(-4,-4),
-                          test_domain=(-4, 4), rseed=42):
-    r"""Generate a dataset for a 1D regression task with a cubic polynomial.
-
-    The regression task modelled here is :math:`y = x^3 + \epsilon`,
-    where :math:`\epsilon \sim \mathcal{N}(0, 9I)`.
-
-    Args:
-        num_train (int): Number of training samples.
-        num_test (int): Number of test samples.
-        train_domain (tuple): Input domain for training samples.
-        test_domain (tuple): Input domain for training samples.
-        rseed (int): To ensure reproducibility, the random seed for the data
-            generation should be decoupled from the random seed of the
-            simulation. Therefore, a new :class:`numpy.random.RandomState` is
-            created for the purpose of generating the data.
-
-    Returns:
-        (tuple): Tuple containing:
-
-        - **train_x**: Generated training inputs.
-        - **test_x**: Generated test inputs.
-        - **train_y**: Generated training outputs.
-        - **test_y**: Generated test outputs.
-
-        Data is returned in form of 2D arrays of class :class:`numpy.ndarray`.
-    """
-    rand = np.random.RandomState(rseed)
-
-    train_x = rand.uniform(low=train_domain[0], high=train_domain[1],
-                               size=(num_train, 1))
-    test_x = np.linspace(start=test_domain[0], stop=test_domain[1],
-                         num=num_test).reshape((num_test, 1))
-
-    map_function = lambda x : (x**3.)
-    train_y = map_function(train_x)
-    test_y = map_function(test_x)
-
-    # Add noise to training outputs.
-    train_eps = rand.normal(loc=0.0, scale=3, size=(num_train, 1))
-    train_y += train_eps
-
-    return train_x, test_x, train_y, test_y
 
 
 def generate_data_from_teacher_network(teacher, n_in, num_train,
@@ -138,6 +94,8 @@ def generate_data_from_teacher(args, num_train=1000, num_test=100, n_in=5, n_out
     Returns:
         See return values of function :func:`regression_cubic_poly`.
     """
+    # FIXME Disentangle the random seeds set in a simulation from the one used
+    # to generate synthetic datasets.
     if device is None:
         device = torch.device('cpu')
     if num_val is None:
@@ -153,6 +111,8 @@ def generate_data_from_teacher(args, num_train=1000, num_test=100, n_in=5, n_out
     train_x = rand.uniform(low=-1, high=1, size=(num_train, n_in))
     test_x = rand.uniform(low=-1, high=1, size=(num_test, n_in))
     val_x = rand.uniform(low=-1, high=1, size=(num_val, n_in))
+    # train_x = 0.01*rand.randn(num_train, n_in)
+    # test_x = 0.01*rand.randn(num_test, n_in)
 
     # Note: make sure that gain is high, such that the neurons are pushed into
     # nonlinear regime. Otherwise we have a linear dataset
@@ -243,53 +203,27 @@ def build_network(args):
                             forward_requires_grad=forward_requires_grad)
     elif args.network_type == 'DTP':
         net = networks.DTPNetwork(**kwargs)
-    elif args.network_type == 'DTP2':
-        net = networks.DTP2Network(**kwargs)
-    elif args.network_type == 'MNDTP':
-        net = networks.MNDTPNetwork(**kwargs)
-    elif args.network_type == 'MNDTPDR':
-        net = networks.MNDTPDRNetwork(**kwargs)
-    elif args.network_type == 'MNDTP2DR':
-        net = networks.MNDTP2DRNetwork(**kwargs)
     elif args.network_type == 'DTPDR':
-        net = networks.DTPDRNetwork(**kwargs)
-    elif args.network_type == 'DKDTP':
-        net = direct_feedback_networks.DirectKernelDTPNetwork(**kwargs,
-                          hidden_feedback_activation=args.hidden_fb_activation,
-                          hidden_feedback_dimension=args.size_hidden_fb,
-                          recurrent_input=args.recurrent_input)
+        net = networks.DTPDRLNetwork(**kwargs)
     elif args.network_type == 'DKDTP2':
-        net = direct_feedback_networks.DKDTP2Network(**kwargs,
-                          hidden_feedback_activation=args.hidden_fb_activation,
-                          hidden_feedback_dimension=args.size_hidden_fb,
-                          recurrent_input=args.recurrent_input
-        )
-    elif args.network_type == 'DMLPDTP':
-        net = direct_feedback_networks.DMLPDTPNetwork(**kwargs,
-                            size_hidden_fb=args.size_mlp_fb,
-                            fb_hidden_activation=args.hidden_fb_activation,
-                            recurrent_input=args.recurrent_input)
+        net = direct_feedback_networks.DDTPRHLNetwork(**kwargs,
+                                                      hidden_feedback_activation=args.hidden_fb_activation,
+                                                      hidden_feedback_dimension=args.size_hidden_fb,
+                                                      recurrent_input=args.recurrent_input
+                                                      )
     elif args.network_type == 'DMLPDTP2':
-        net = direct_feedback_networks.DMLPDTP2Network(**kwargs,
-                              size_hidden_fb=args.size_mlp_fb,
-                              fb_hidden_activation=args.hidden_fb_activation,
-                              recurrent_input=args.recurrent_input)
-    elif args.network_type == 'DMLPDTP3':
-        net = direct_feedback_networks.DMLPDTP3Network(**kwargs,
-                              size_hidden_fb=args.size_mlp_fb,
-                              fb_hidden_activation=args.hidden_fb_activation,
-                              recurrent_input=args.recurrent_input)
+        net = direct_feedback_networks.DDTPMLPNetwork(**kwargs,
+                                                      size_hidden_fb=args.size_mlp_fb,
+                                                      fb_hidden_activation=args.hidden_fb_activation,
+                                                      recurrent_input=args.recurrent_input)
     elif args.network_type == 'DDTPControl':
         net = direct_feedback_networks.DDTPControlNetwork(**kwargs,
                               size_hidden_fb=args.size_mlp_fb,
                               fb_hidden_activation=args.hidden_fb_activation,
                               recurrent_input=args.recurrent_input)
-    elif args.network_type == 'GN':
-        net = networks.GNNetwork(**kwargs,
-                                 damping=args.gn_damping_training)
     elif args.network_type == 'GN2':
-        net = networks.GN2Network(**kwargs,
-                                 damping=args.gn_damping_training)
+        net = networks.GNTNetwork(**kwargs,
+                                  damping=args.gn_damping_training)
     elif args.network_type == 'BP':
         net = networks.BPNetwork(n_in=args.size_input, n_hidden=n_hidden,
                                  n_out=args.size_output,
@@ -297,7 +231,42 @@ def build_network(args):
                                  output_activation=output_activation,
                                  bias=not args.no_bias,
                                  initialization=args.initialization)
+    elif args.network_type == 'DDTPConv':
+        net = conv_network.DDTPConvNetwork(bias=not args.no_bias,
+                                           hidden_activation=args.hidden_activation,
+                                           feedback_activation=args.fb_activation,
+                                           initialization=args.initialization,
+                                           sigma=args.sigma,
+                                           plots=args.plots,
+                                           forward_requires_grad=forward_requires_grad)
+    elif args.network_type == 'DDTPConvCIFAR':
+        net = conv_network.DDTPConvNetworkCIFAR(bias=not args.no_bias,
+                                           hidden_activation=args.hidden_activation,
+                                           feedback_activation=args.fb_activation,
+                                           initialization=args.initialization,
+                                           sigma=args.sigma,
+                                                plots=args.plots,
+                                               forward_requires_grad=forward_requires_grad)
+        args.network_type = 'DDTPConv'
+    elif args.network_type == 'DDTPConvControlCIFAR':
+        net = conv_network.DDTPConvControlNetworkCIFAR(bias=not args.no_bias,
+                                           hidden_activation=args.hidden_activation,
+                                           feedback_activation=args.fb_activation,
+                                           initialization=args.initialization,
+                                           sigma=args.sigma,
+                                                plots=args.plots,
+                                               forward_requires_grad=forward_requires_grad)
+        args.network_type = 'DDTPConv'
 
+    elif args.network_type == 'BPConv':
+        net = conv_network.BPConvNetwork(bias=not args.no_bias,
+                                         hidden_activation=args.hidden_activation,
+                                         initialization=args.initialization)
+    elif args.network_type == 'BPConvCIFAR':
+        net = conv_network.BPConvNetworkCIFAR(bias=not args.no_bias,
+                                         hidden_activation=args.hidden_activation,
+                                         initialization=args.initialization)
+        args.network_type = 'BPConv'
 
     else:
         raise ValueError('The provided network type {} is not supported'.format(

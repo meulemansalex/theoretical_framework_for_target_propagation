@@ -1,17 +1,21 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+"""
+A collection of helper functions
+--------------------------------
+"""
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -59,97 +63,6 @@ class RegressionDataset(Dataset):
 
         return batch_in, batch_out
 
-def plot_predictions(device, test_loader, net):
-    """Plot the predictions of 1D regression tasks.
-
-    Args:
-        (....): See docstring of function :func:`main.test`.
-    """
-    net.eval()
-
-    data = test_loader.dataset
-
-    assert(data.inputs.shape[1] == 1 and data.outputs.shape[1] == 1)
-
-    inputs = data.inputs.detach().cpu().numpy()
-    targets = data.outputs.detach().cpu().numpy()
-    
-    with torch.no_grad():
-        # Note, for simplicity, we assume that the dataset is small and we don't
-        # have t collect the predictions by iterating over mini-batches.
-        predictions = net.forward(data.inputs).detach().cpu().numpy()
-
-    plt.figure(figsize=(10, 6))
-    plt.title("Predictions in 1D regression task", size=20)
-
-    plt.plot(inputs, targets, color='k', label='Target function',
-             linestyle='dashed', linewidth=.5)
-    plt.scatter(inputs, predictions, color='r', label='Predictions')
-
-    plt.legend()
-    plt.xlabel('x')
-    plt.ylabel('y')
-
-    plt.show()
-
-def compute_matrix_angle(C,D):
-    """Compute the angle between the two given matrices in degrees.
-
-    Args:
-        C:
-        D:
-    """
-    # Assert matrices have same dimensions
-    assert C.size() == D.size()
-
-    C_vectorized = C.reshape(-1)
-    D_vectorized = D.reshape(-1)
-
-    cosine_angle = C_vectorized.dot(D_vectorized)/\
-                   (torch.norm(C_vectorized, p=2)*\
-                    torch.norm(D_vectorized, p=2))
-
-    return 180/np.pi*torch.acos(cosine_angle)
-
-def plot_angles(angle_tensor, title, ylabel):
-    # angles = torch.var.detach(angle_tensor).numpy()
-    rc('text', usetex=True)
-    angles = angle_tensor.detach().numpy()
-    nb_layers = angles.shape[1]
-    fig = plt.figure()
-    fig.suptitle(title, fontsize=16)
-    for i in range(nb_layers):
-        plt.subplot(nb_layers, 1, i+1)
-        plt.plot(angles[:,i])
-        plt.ylabel(ylabel % (str(i+1), str(i+1)))
-        plt.xlabel('epoch')
-        if i==nb_layers-1:
-            plt.title('output layer')
-        else:
-            plt.title('hidden layer {}'.format(i+1))
-        plt.subplots_adjust(hspace=0.5)
-    plt.show()
-
-def compute_error_angle(net, predictions, targets, linear=False):
-    W = net.linear_layers[-1].weights
-    B = net.linear_layers[-1].feedbackweights
-    output_errors = targets - predictions
-    delta_A_BP = output_errors.mm(W)
-    delta_A_FA = output_errors.mm(B.t())
-    Z = net.linear_layers[-2].activations
-    if linear:
-        delta_Z_BP = delta_A_BP
-        delta_Z_FA = delta_A_FA
-    else:
-        sigmoid = lambda x: torch.div(1., torch.add(1., torch.exp(-x)))
-        delta_Z_BP = torch.mul(delta_A_BP, torch.mul(sigmoid(Z), 1. - sigmoid(Z)))
-        delta_Z_FA = torch.mul(delta_A_FA, torch.mul(sigmoid(Z), 1. - sigmoid(Z)))
-    inner_products = torch.sum(delta_Z_BP*delta_Z_FA, dim=1)
-    delta_Z_BP_norms = torch.norm(delta_Z_BP, p=2, dim=1)
-    delta_Z_FA_norms = torch.norm(delta_Z_FA, p=2, dim=1)
-    cosines = inner_products/(delta_Z_BP_norms*delta_Z_FA_norms)
-    angles = torch.acos(cosines)
-    return 180/3.1415*torch.mean(angles)
 
 def accuracy(predictions, labels):
     """
@@ -171,6 +84,7 @@ def accuracy(predictions, labels):
 
     return correct/total
 
+
 def choose_optimizer(args, net):
     """
     Return the wished optimizer (based on inputs from args).
@@ -182,7 +96,8 @@ def choose_optimizer(args, net):
 
     """
     forward_optimizer = OptimizerList(args, net)
-    feedback_optimizer = choose_feedback_optimizer(args, net)
+    # feedback_optimizer = choose_feedback_optimizer(args, net)
+    feedback_optimizer = FbOptimizerList(args, net)
 
     return forward_optimizer, feedback_optimizer
 
@@ -198,13 +113,19 @@ def choose_forward_optimizer(args, net):
     """
     if args.freeze_BPlayers:
         forward_params = net.get_reduced_forward_parameter_list()
-    elif args.network_type == 'BP':
+    elif args.network_type in ('BP', 'BPConv'):
         if args.shallow_training:
             print('Shallow training')
             forward_params = net.layers[-1].parameters()
         elif args.only_train_first_layer:
             print('Only training first layer')
             forward_params = net.layers[0].parameters()
+        elif args.only_train_last_two_layers:
+            raise NotImplementedError('not yet implemented for BP')
+        elif args.only_train_last_three_layers:
+            raise NotImplementedError('not yet implemented for BP')
+        elif args.only_train_last_four_layers:
+            raise NotImplementedError('not yet implemented for BP')
         else:
             forward_params = net.parameters()
     else:
@@ -214,6 +135,12 @@ def choose_forward_optimizer(args, net):
         elif args.freeze_output_layer:
             print('Freezing output layer')
             forward_params = net.get_reduced_forward_parameter_list()
+        elif args.only_train_last_two_layers:
+            forward_params = net.get_forward_parameters_last_two_layers()
+        elif args.only_train_last_three_layers:
+            forward_params = net.get_forward_parameters_last_three_layers()
+        elif args.only_train_last_four_layers:
+            forward_params = net.get_forward_parameters_last_four_layers()
         else:
             forward_params = net.get_forward_parameter_list()
 
@@ -313,44 +240,74 @@ class OptimizerList(object):
             forward_optimizer = choose_forward_optimizer(args, net)
             optimizer_list = [forward_optimizer]
         elif isinstance(args.lr, np.ndarray):
-            if args.network_type == 'BP':
-                raise NetworkError('Multiple learning rates is not yet '
-                                   'implemented for BP')
+            # if args.network_type in ('BP', 'BPConv'):
+            #     raise NetworkError('Multiple learning rates is not yet '
+            #                        'implemented for BP')
             if args.freeze_BPlayers:
                 raise NotImplementedError('freeze_BPlayers not '
                                           'yet supported in '
                                           'OptimizerList')
             else:
-                if args.only_train_first_layer:
-                    print('Only training first layer')
-                    forward_params = \
-                        net.get_forward_parameter_list_first_layer()
-                elif args.freeze_output_layer:
-                    print('Freezing output layer')
-                    forward_params = net.get_reduced_forward_parameter_list()
-                else:
-                    forward_params = net.get_forward_parameter_list()
+                if not args.network_type == 'BPConv':
+                    if args.only_train_first_layer:
+                        print('Only training first layer')
+                        forward_params = \
+                            net.get_forward_parameter_list_first_layer()
+                    elif args.freeze_output_layer:
+                        print('Freezing output layer')
+                        forward_params = net.get_reduced_forward_parameter_list()
+                    elif args.only_train_last_two_layers:
+                        forward_params = net.get_forward_parameters_last_two_layers()
+                    elif args.only_train_last_three_layers:
+                        forward_params = net.get_forward_parameters_last_three_layers()
+                    elif args.only_train_last_four_layers:
+                        forward_params = net.get_forward_parameters_last_four_layers()
+                    else:
+                        forward_params = net.get_forward_parameter_list()
 
-            if (not args.no_bias and not args.freeze_output_layer and
-                len(args.lr)*2 != len(forward_params)) or \
-                    (args.no_bias and not args.freeze_output_layer and
-                     len(args.lr) != len(forward_params)):
-                raise NetworkError('The lenght of the list with learning rates '
-                                   'does not correspond with the size of the '
-                                   'network.')
-            if not args.optimizer == 'SGD':
+                    if (not args.no_bias and not args.freeze_output_layer and
+                        len(args.lr)*2 != len(forward_params)) or \
+                            (args.no_bias and not args.freeze_output_layer and
+                             len(args.lr) != len(forward_params)):
+                        raise NetworkError('The lenght of the list with learning rates '
+                                           'does not correspond with the size of the '
+                                           'network.')
+            if not (args.optimizer == 'SGD' or args.optimizer == 'Adam'):
                 raise NetworkError('multiple learning rates are only supported '
                                    'for SGD optimizer')
 
             optimizer_list = []
             for i, lr in enumerate(args.lr):
-                if args.no_bias:
-                    parameters = [net.layers[i].weights]
+                eps = args.epsilon[i]
+                if args.network_type == 'BPConv':
+                    if i == 0:
+                        j = 0
+                    elif i == 1:
+                        j = 2
+                    elif i == 2:
+                        j = 4
+                    elif i == 3:
+                        j = 5
+                    if args.no_bias:
+                        parameters = [net.layers[j].weight]
+                    else:
+                        parameters = [net.layers[j].weight, net.layers[j].bias]
                 else:
-                    parameters = [net.layers[i].weights, net.layers[i].bias]
-                optimizer = torch.optim.SGD(parameters,
-                                            lr=lr, momentum=args.momentum,
-                                            weight_decay=args.forward_wd)
+                    if args.no_bias:
+                        parameters = [net.layers[i].weights]
+                    else:
+                        parameters = [net.layers[i].weights, net.layers[i].bias]
+                if args.optimizer == 'SGD':
+                    optimizer = torch.optim.SGD(parameters,
+                                                lr=lr, momentum=args.momentum,
+                                                weight_decay=args.forward_wd)
+                elif args.optimizer == 'Adam':
+                    optimizer = torch.optim.Adam(
+                        parameters,
+                        lr=lr,
+                        betas=(args.beta1, args.beta2),
+                        eps=eps,
+                        weight_decay=args.forward_wd)
                 optimizer_list.append(optimizer)
         else:
             raise ValueError('Command line argument lr={} is not recognized '
@@ -374,6 +331,47 @@ class OptimizerList(object):
         else:
             self._optimizer_list[i].step()
 
+class FbOptimizerList(object):
+    def __init__(self, args, net):
+        if isinstance(args.lr_fb, float):
+            fb_optimizer = choose_feedback_optimizer(args, net)
+            optimizer_list = [fb_optimizer]
+        else:
+            assert args.network_type == 'DDTPConv'
+            assert len(args.lr_fb) == 2
+            assert args.optimizer == 'Adam'
+            if isinstance(args.epsilon_fb, float):
+                args.epsilon_fb = [args.epsilon_fb, args.epsilon_fb]
+            else:
+                assert len(args.epsilon_fb) == 2
+            conv_fb_parameters = net.get_conv_feedback_parameter_list()
+            fc_fb_parameters = net.get_fc_feedback_parameter_list()
+            conv_fb_optimizer = torch.optim.Adam(
+                                    conv_fb_parameters,
+                                    lr=args.lr_fb[0],
+                                    betas=(args.beta1_fb, args.beta2_fb),
+                                    eps=args.epsilon_fb[0],
+                                    weight_decay=args.feedback_wd
+                                    )
+            fc_fb_optimizer = torch.optim.Adam(
+                                    fc_fb_parameters,
+                                    lr=args.lr_fb[1],
+                                    betas=(args.beta1_fb, args.beta2_fb),
+                                    eps=args.epsilon_fb[1],
+                                    weight_decay=args.feedback_wd
+                                    )
+
+            optimizer_list = [conv_fb_optimizer, fc_fb_optimizer]
+        self._optimizer_list = optimizer_list
+
+    def step(self):
+        for optimizer in self._optimizer_list:
+            optimizer.step()
+
+    def zero_grad(self):
+        for optimizer in self._optimizer_list:
+            optimizer.zero_grad()
+
 
 def save_logs(writer, step, net, loss, accuracy, test_loss, test_accuracy,
               val_loss, val_accuracy):
@@ -386,7 +384,7 @@ def save_logs(writer, step, net, loss, accuracy, test_loss, test_accuracy,
         loss: current loss of the training iteration
 
     """
-    net.save_logs(writer, step)
+    net.save_logs(writer, step) #FIXME: Uncomment again. This does not work for DKDTP
     writer.add_scalar(tag='training_metrics/loss',
                       scalar_value=loss,
                       global_step=step)
@@ -454,7 +452,6 @@ def save_forward_batch_logs(args, writer, step, net, loss, output_activation):
                                   retain_graph)
 
 
-
 def save_feedback_batch_logs(args, writer, step, net, init=False):
     """
     Save logs and plots for the current mini-batch on tensorboardX
@@ -475,6 +472,7 @@ def save_gradient_hook(module, grad_input, grad_output):
               target for the output layer."""
     print('save grad in module')
     module.output_network_gradient = grad_input[0]
+
 
 def compute_jacobian(input, output, structured_tensor=False,
                      retain_graph=False):
@@ -542,6 +540,7 @@ def compute_jacobian(input, output, structured_tensor=False,
 
     return jacobian
 
+
 def compute_damped_gn_update(jacobian, output_error, damping):
     """
     Compute the damped Gauss-Newton update, based on the given jacobian and
@@ -599,6 +598,7 @@ def compute_damped_gn_update(jacobian, output_error, damping):
 
     return gn_updates
 
+
 def compute_angle(A, B):
     """
      Compute the angle between two tensors of the same size. The tensors will
@@ -633,6 +633,7 @@ def compute_angle(A, B):
         print(cosine)
     return angle
 
+
 def compute_average_batch_angle(A, B):
     """
     Compute the average of the angles between the mini-batch samples of A and B.
@@ -649,10 +650,25 @@ def compute_average_batch_angle(A, B):
 
     A = A.flatten(1, -1)
     B = B.flatten(1, -1)
+    if contains_nan(A):
+        print('tensor A contains nans in activation angles:')
+        print(A)
+    if contains_nan(B):
+        print('tensor B contains nans in activation angles:')
+        print(B)
     inner_products = torch.sum(A*B, dim=1)
     A_norms = torch.norm(A, p=2, dim=1)
     B_norms = torch.norm(B, p=2, dim=1)
     cosines = inner_products/(A_norms*B_norms)
+    if contains_nan(cosines):
+        print('cosines contains nans in activation angles:')
+        print('inner product: {}'.format(inner_products))
+        print('norm A: {}'.format(A_norms))
+        print('norm B: {}'.format(B_norms))
+    if torch.sum(A_norms == 0) > 0:
+        print('A_norms contains zeros')
+    if torch.sum(B_norms == 0) > 0:
+        print('B_norms contains zeros')
     cosines = torch.min(cosines, torch.ones_like(cosines))
     angles = torch.acos(cosines)
     return 180/np.pi*torch.mean(angles)
@@ -660,6 +676,7 @@ def compute_average_batch_angle(A, B):
 
 class NetworkError(Exception):
     pass
+
 
 def list_to_str(list_arg, delim=' '):
     """Convert a list of numbers into a string.
@@ -678,6 +695,7 @@ def list_to_str(list_arg, delim=' '):
         ret += str(e)
     return ret
 
+
 def str_to_list(string, delim=',', type='float'):
     """ Convert a str (that originated from a list) back
     to a list of floats."""
@@ -692,7 +710,6 @@ def str_to_list(string, delim=',', type='float'):
         raise ValueError('type {} not recognized'.format(type))
 
     return lst
-
 
 
 def setup_summary_dict(args):
@@ -753,9 +770,9 @@ def setup_summary_dict(args):
     for k in summary_keys:
         if k == 'finished':
             summary[k] = 0
-
         else:
             summary[k] = -1
+
     save_summary_dict(args, summary)
 
     return summary
@@ -790,6 +807,7 @@ def save_summary_dict(args, summary):
             else:
                 f.write('%s %d\n' % (k, v))
 
+
 def get_av_reconstruction_loss(network):
     """ Get the average reconstruction loss of the network across its layers
     for the current mini-batch.
@@ -801,10 +819,11 @@ def get_av_reconstruction_loss(network):
     reconstruction_losses = np.array([])
 
     for layer in network.layers[1:]:
+        # print(layer.reconstruction_loss)
         reconstruction_losses = np.append(reconstruction_losses,
                                            layer.reconstruction_loss)
 
-        reconstruction_losses = list(filter(lambda x: x != None, reconstruction_losses))
+        reconstruction_losses = list(filter(lambda x: x != None, reconstruction_losses)) #FIXME: Probably slows everything down, but was needed because there is a None in the first iteration of DKDTP
 
     return np.mean(reconstruction_losses[:-1])
 
@@ -850,11 +869,13 @@ def process_hdim(hdim_str):
     else:
         return int(hdim_str)
 
+
 def process_hdim_fb(hdim_str):
     if ',' in hdim_str:
         return str_to_list(hdim_str, ',', type='int')
     else:
         return [int(hdim_str)]
+
 
 def check_gpu():
     try:
@@ -865,6 +886,9 @@ def check_gpu():
 
 
 def contains_nan(tensor):
+    # if not isinstance(tensor, torch.Tensor):
+    #     print('input is not a tensor but {}'.format(type(tensor)))
+    #     tensor = torch.Tensor(tensor)
     nb_nans = tensor != tensor
     nb_infs = tensor == float('inf')
     if isinstance(nb_nans, bool):
@@ -955,6 +979,7 @@ def make_plot_output_space(args, net, i, loss_function,
 
 
     # compute the start output value
+    # output_traj = np.empty((steps + 1, 2))
     output_start = net.forward(inputs)
 
     # compute the output value after a very small step size
@@ -962,7 +987,6 @@ def make_plot_output_space(args, net, i, loss_function,
     output_next = net.forward(inputs)
 
     output_update = (output_next - output_start)[0, 0:2].detach().cpu().numpy()
-
 
     # Make the plot
     ax = plt.axes()
@@ -992,6 +1016,7 @@ def make_plot_output_space(args, net, i, loss_function,
     file_name = 'output_space_updates_fig_' + args.network_type + '.svg'
     plt.savefig(os.path.join(args.out_dir, file_name))
     plt.close()
+
     file_name = 'output_arrow_' + args.network_type + '.npy'
     np.save(os.path.join(args.out_dir, file_name),
             output_arrow)
@@ -1030,7 +1055,6 @@ def plot_contours(y, label, loss_function, ax, fontsize=26):
 
     ax.tick_params(axis='both', which='major', labelsize=fontsize)
     CS = ax.contour(Y1, Y2, L, levels=levels)
-    # , colors = 'tab:blue'
 
 
 def make_plot_output_space_bp(args, net, i, loss_function,
@@ -1076,13 +1100,14 @@ def make_plot_output_space_bp(args, net, i, loss_function,
 
 
     # Interpolate the output trajectory
+    # output_traj = np.empty((steps + 1, 2))
     output_start = net(inputs)
+    # output_traj[0, :] = output_start[0, 0:2].detach().cpu().numpy()
 
     sgd_optimizer.step()
     output_next = net(inputs)
 
     output_update = (output_next - output_start)[0, 0:2].detach().cpu().numpy()
-
 
     # Make the plot
     ax = plt.axes()
@@ -1112,6 +1137,8 @@ def make_plot_output_space_bp(args, net, i, loss_function,
     file_name = 'output_space_updates_fig_' + args.network_type + '.svg'
     plt.savefig(os.path.join(args.out_dir, file_name))
     plt.close()
+    # file_name = 'output_space_updates_traj_' + args.network_type + '.npy'
+    # np.save(os.path.join(args.out_dir, file_name), output_traj)
     file_name = 'output_arrow_' + args.network_type + '.npy'
     np.save(os.path.join(args.out_dir, file_name),
             output_arrow)

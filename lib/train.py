@@ -1,17 +1,17 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Collection of train and test functions.
 """
@@ -30,9 +30,7 @@ from tensorboardX import SummaryWriter
 import pandas as pd
 
 from lib import utils
-from lib.networks import LeeDTPNetwork, DTPNetwork, MNDTP2DRNetwork, \
-    MNDTPDRNetwork
-from lib.direct_feedback_networks import DirectKernelDTPNetwork
+from lib.networks import LeeDTPNetwork, DTPNetwork
 import pickle
 
 def train(args, device, train_loader, net, writer, test_loader, summary,
@@ -168,7 +166,7 @@ def train(args, device, train_loader, net, writer, test_loader, summary,
             train_var.accuracies = np.array([])
         train_var.losses = np.array([])
         train_var.reconstruction_losses = np.array([])
-        if args.parallel:
+        if not args.train_separate:
             train_parallel(args, train_var, device, train_loader, net, writer)
         else:
             train_separate(args, train_var, device, train_loader, net, writer)
@@ -215,10 +213,8 @@ def train(args, device, train_loader, net, writer, test_loader, summary,
                             val_accuracy=train_var.val_accuracy)
 
         # save epoch results in summary dict
-        # train_var.summary['loss_train'][e] = train_var.epoch_loss
         train_var.epoch_losses = np.append(train_var.epoch_losses,
                                            train_var.epoch_loss)
-        # train_var.summary['loss_test'][e] = train_var.test_loss
         train_var.test_losses = np.append(train_var.test_losses,
                                           train_var.test_loss)
 
@@ -228,8 +224,6 @@ def train(args, device, train_loader, net, writer, test_loader, summary,
         if not args.freeze_fb_weights:
             av_epoch_reconstruction_loss = np.mean(train_var.reconstruction_losses)
             var_epoch_reconstruction_loss = np.var(train_var.reconstruction_losses)
-            # train_var.summary['rec_loss'][e] = av_epoch_reconstruction_loss
-            # train_var.summary['rec_loss_var'][e] = var_epoch_reconstruction_loss
             train_var.epoch_reconstruction_losses = np.append(
                 train_var.epoch_reconstruction_losses,
                 av_epoch_reconstruction_loss)
@@ -239,10 +233,8 @@ def train(args, device, train_loader, net, writer, test_loader, summary,
             )
 
         if args.classification:
-            # train_var.summary['acc_train'][e] = train_var.epoch_accuracy
             train_var.epoch_accuracies = np.append(train_var.epoch_accuracies,
                                                    train_var.epoch_accuracy)
-            # train_var.summary['acc_test'][e] = train_var.test_accuracy
             train_var.test_accuracies = np.append(train_var.test_accuracies,
                                                   train_var.test_accuracy)
             if not args.no_val_set:
@@ -332,36 +324,6 @@ def train(args, device, train_loader, net, writer, test_loader, summary,
                     train_var.epoch_accuracies[best_epoch]
 
     utils.save_summary_dict(args, train_var.summary)
-    if args.plots is not None:
-        title = type(net).__name__ + "\n" + "Epoch Loss" + "\n" + args.hidden_activation
-        plt.plot(train_var.epoch_losses)
-        plt.title(title)
-        name = net.__class__.__name__ + "_epoch_loss.svg"
-        plt.savefig(os.path.join(args.out_dir, name))
-        if args.plots == 'save_and_show':
-            plt.show()
-        else:
-            plt.close()
-
-        title = type(net).__name__ + "\n" + "Test Loss" + "\n" + args.hidden_activation
-        plt.plot(train_var.test_losses)
-        plt.title(title)
-        name = net.__class__.__name__ + "_test_loss.svg"
-        plt.savefig(os.path.join(args.out_dir, name))
-        if args.plots == 'save_and_show':
-            plt.show()
-        else:
-            plt.close()
-
-        title = type(net).__name__ + "\n" + "Reconstruction Loss" + "\n" + args.hidden_activation
-        plt.plot(train_var.reconstruction_losses)
-        plt.title(title)
-        name = net.__class__.__name__ + "_reconstruction_loss.svg"
-        plt.savefig(os.path.join(args.out_dir, name))
-        if args.plots == 'save_and_show':
-            plt.show()
-        else:
-            plt.close()
 
     print('Training network ... Done')
     return train_var.summary
@@ -389,7 +351,8 @@ def train_parallel(args, train_var, device, train_loader, net, writer):
             inputs, targets = inputs.double().to(device), targets.to(device)
         else:
             inputs, targets = inputs.to(device), targets.to(device)
-        inputs = inputs.flatten(1, -1)
+        if not args.network_type == 'DDTPConv':
+            inputs = inputs.flatten(1, -1)
         predictions = net.forward(inputs)
         if args.classification and args.output_activation == 'sigmoid':
             # convert targets to one hot vectors for MSE loss:
@@ -427,7 +390,6 @@ def train_parallel(args, train_var, device, train_loader, net, writer):
                                           net,
                                           train_var.batch_loss, predictions)
             train_var.batch_idx += 1
-            # print(train_var.batch_idx)
 
         if not args.freeze_fb_weights and args.extra_fb_minibatches > 0:
             train_extra_fb_minibatches(args, train_var, device, train_loader,
@@ -435,7 +397,14 @@ def train_parallel(args, train_var, device, train_loader, net, writer):
 
         # update the forward parameters
         if not args.freeze_forward_weights:
+            if args.train_randomized:
+                # Fixme: correct if-else statement to include randomized updates
+                raise NotImplementedError('The randomized version of the algorithms'
+                                          'is not yet implemented. Select the '
+                                          'correct layer to optimize with '
+                                          'forward_optimizer.step(i).')
             train_var.forward_optimizer.step()
+
 
 
 def train_separate(args, train_var, device, train_loader, net, writer):
@@ -463,7 +432,8 @@ def train_separate(args, train_var, device, train_loader, net, writer):
                     device), targets.to(device)
             else:
                 inputs, targets = inputs.to(device), targets.to(device)
-            inputs = inputs.flatten(1, -1)
+            if not args.network_type == 'DDTPConv':
+                inputs = inputs.flatten(1, -1)
 
             predictions = net.forward(inputs)
 
@@ -480,13 +450,13 @@ def train_separate(args, train_var, device, train_loader, net, writer):
 
     # Train forward parameters on whole training batch
     for i, (inputs, targets) in enumerate(train_loader):
-        # print("  train fw: ", i)
         if args.double_precision:
             inputs, targets = inputs.double().to(device), targets.to(
                 device)
         else:
             inputs, targets = inputs.to(device), targets.to(device)
-        inputs = inputs.flatten(1, -1)
+        if not args.network_type == 'DDTPConv':
+            inputs = inputs.flatten(1, -1)
         if args.classification and \
                 args.output_activation == 'sigmoid':
             # convert targets to one hot vectors for MSE loss:
@@ -520,6 +490,13 @@ def train_separate(args, train_var, device, train_loader, net, writer):
 
         # update the forward parameters
         if not args.freeze_forward_weights:
+            if args.train_randomized:
+                # Fixme: correct if-else statement to include randomized updates
+                raise NotImplementedError(
+                    'The randomized version of the algorithms'
+                    'is not yet implemented. Select the '
+                    'correct layer to optimize with '
+                    'forward_optimizer.step(i).')
             train_var.forward_optimizer.step()
 
 
@@ -537,8 +514,8 @@ def train_forward_parameters(args, net, predictions, targets, loss_function,
                   args.save_BP_activations_angle
 
     forward_optimizer.zero_grad()
-    loss = args.loss_scale * loss_function(predictions, targets)
-    if args.not_randomized:
+    loss = loss_function(predictions, targets)
+    if not args.train_randomized:
         net.backward(loss, args.target_stepsize, save_target=save_target,
                      norm_ratio=args.norm_ratio)
     else:
@@ -564,14 +541,14 @@ def train_feedback_parameters(args, net, feedback_optimizer):
     feedback_optimizer.zero_grad()
 
     if args.diff_rec_loss:
-        if args.not_randomized_fb:
+        if not args.train_randomized_fb:
             for k in range(1, net.depth):
                 net.compute_feedback_gradients(k)
         else:
             k = np.random.randint(1, net.depth)
             net.compute_feedback_gradients(k)
     elif args.direct_fb:
-        if args.not_randomized_fb:
+        if not args.train_randomized_fb:
             for k in range(0, net.depth-1):
                 net.compute_feedback_gradients(k)
         else:
@@ -605,14 +582,15 @@ def test(args, device, net, test_loader, loss_function):
                     device)
             else:
                 inputs, targets = inputs.to(device), targets.to(device)
-            inputs = inputs.flatten(1, -1)
+            if not args.network_type == 'DDTPConv':
+                inputs = inputs.flatten(1, -1)
             if args.classification and\
                     args.output_activation == 'sigmoid':
                 # convert targets to one hot vectors for MSE loss:
                 targets = utils.int_to_one_hot(targets, 10, device,
                                            soft_target=args.soft_target)
             predictions = net.forward(inputs)
-            loss += args.loss_scale * loss_function(predictions, targets).item()
+            loss += loss_function(predictions, targets).item()
             if args.classification:
                 if args.output_activation == 'sigmoid':
                     accuracy += utils.accuracy(predictions,
@@ -642,12 +620,12 @@ def train_only_feedback_parameters(args, train_var, device, train_loader,
                 device)
         else:
             inputs, targets = inputs.to(device), targets.to(device)
-        inputs = inputs.flatten(1, -1)
+        if not args.network_type == 'DDTPConv':
+            inputs = inputs.flatten(1, -1)
 
         predictions = net.forward(inputs)
 
         train_feedback_parameters(args, net, train_var.feedback_optimizer)
-        # print(train_var.reconstruction_losses_init)
 
         for l, layer in enumerate(net.layers):
             loss_rec = layer.reconstruction_loss
@@ -670,8 +648,12 @@ def train_extra_fb_minibatches(args, train_var, device, train_loader,
     train_loader_iter = iter(train_loader)
     for i in range(args.extra_fb_minibatches):
         (inputs, targets) = train_loader_iter.next()
-        inputs, targets = inputs.to(device), targets.to(device)
-        inputs = inputs.flatten(1, -1)
+        if args.double_precision:
+            inputs, targets = inputs.double().to(device), targets.to(device)
+        else:
+            inputs, targets = inputs.to(device), targets.to(device)
+        if not args.network_type == 'DDTPConv':
+            inputs = inputs.flatten(1, -1)
         predictions = net.forward(inputs)
         train_feedback_parameters(args, net, train_var.feedback_optimizer)
 
@@ -746,7 +728,8 @@ def train_bp(args, device, train_loader, net, writer, test_loader, summary,
                     device), targets.to(device)
             else:
                 inputs, targets = inputs.to(device), targets.to(device)
-            inputs = inputs.flatten(1, -1)
+            if not args.network_type == 'BPConv':
+                inputs = inputs.flatten(1, -1)
             if args.classification and \
                     args.output_activation == 'sigmoid':
                 # convert targets to one hot vectors for MSE loss:
@@ -803,22 +786,17 @@ def train_bp(args, device, train_loader, net, writer, test_loader, summary,
                             val_loss=val_loss,
                             val_accuracy=val_accuracy)
 
-        # save epoch results in summary dict
-        # summary['loss_train'][e] = epoch_loss
         epoch_losses = np.append(epoch_losses,
                                            epoch_loss)
-        # summary['loss_test'][e] = test_loss
         test_losses = np.append(test_losses,
                                           test_loss)
         if not args.no_val_set:
             val_losses = np.append(val_losses, val_loss)
 
         if args.classification:
-            # summary['acc_train'][e] = epoch_accuracy
             epoch_accuracies = np.append(
                 epoch_accuracies,
                 epoch_accuracy)
-            # summary['acc_test'][e] = test_accuracy
             test_accuracies = np.append(test_accuracies,
                                                   test_accuracy)
             if not args.no_val_set:
@@ -901,7 +879,8 @@ def test_bp(args, device, net, test_loader, loss_function):
                     device)
             else:
                 inputs, targets = inputs.to(device), targets.to(device)
-            inputs = inputs.flatten(1, -1)
+            if not args.network_type == 'BPConv':
+                inputs = inputs.flatten(1, -1)
             if args.classification and args.output_activation == 'sigmoid':
                 # convert targets to one hot vectors for MSE loss:
                 targets = utils.int_to_one_hot(targets, 10, device,
@@ -942,7 +921,8 @@ def gn_damping_hpsearch(args, train_var, device, train_loader, net, writer):
                     device), targets.to(device)
             else:
                 inputs, targets = inputs.to(device), targets.to(device)
-            inputs = inputs.flatten(1, -1)
+            if not args.network_type == 'DDTPConv':
+                inputs = inputs.flatten(1, -1)
             if args.classification and \
                     args.output_activation == 'sigmoid':
                 # convert targets to one hot vectors for MSE loss:

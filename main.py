@@ -1,17 +1,17 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Controller for simulations
 --------------------------
@@ -19,6 +19,8 @@ Controller for simulations
 The module :mod:`main` is an executable script that controls the simulations.
 
 For more usage information, please check out
+
+.. code-block:: console
 
   $ python3 main --help
 
@@ -41,8 +43,6 @@ import os.path
 import pickle
 
 
-import matplotlib.pyplot as plt
-
 def run():
     """
     - Parsing command-line arguments
@@ -53,9 +53,9 @@ def run():
     """
 
     ### Parse CLI arguments.
-    parser = argparse.ArgumentParser(description='Classification with'
-                                                 'difference target'
-                                                 'propagation')
+    parser = argparse.ArgumentParser(description='Run experiments from paper '
+                                                 '"A theoretical framework for'
+                                                 'target propagation".')
 
     dgroup = parser.add_argument_group('Dataset options')
     dgroup.add_argument('--dataset', type=str, default='mnist',
@@ -81,8 +81,10 @@ def run():
                         help='Number of training epochs. ' +
                              'Default: %(default)s.')
     tgroup.add_argument('--batch_size', type=int, metavar='N', default=100,
-                        help='Training batch size. Choose divisor of "num_train". Default: %(default)s.')
-    tgroup.add_argument('--lr', type=str, default='0.0148893430317',
+                        help='Training batch size. '
+                             'Choose divisor of "num_train". '
+                             'Default: %(default)s.')
+    tgroup.add_argument('--lr', type=str, default='0.01',
                         help='Learning rate of optimizer for the forward '
                              'parameters. You can either provide a single '
                              'float that will be used as lr for all the layers,'
@@ -91,7 +93,7 @@ def run():
                              ' list should be equal to num_hidden + 1. The list'
                              'may not contain spaces. Default: ' +
                              '%(default)s.')
-    tgroup.add_argument('--lr_fb', type=float, default=0.000101149118237,
+    tgroup.add_argument('--lr_fb', type=str, default='0.000101149118237',
                         help='Learning rate of optimizer for the feedback '
                              'parameters. Default: ' +
                              '%(default)s.')
@@ -108,7 +110,7 @@ def run():
                         help='Optimizer used for training the feedback '
                              'parameters.')
     tgroup.add_argument('--momentum', type=float, default=0.0,
-                        help='Momentum of the optimizer. ' +
+                        help='Momentum of the SGD or RMSprop optimizer. ' +
                              'Default: %(default)s.')
     tgroup.add_argument('--sigma', type=float, default=0.08,
                         help='svd of gaussian noise used to corrupt the hidden'
@@ -120,16 +122,23 @@ def run():
     tgroup.add_argument('--feedback_wd', type=float, default=0.0,
                         help='Weight decay for the feedback weights. '
                              'Default: %(default)s.')
-    tgroup.add_argument('--parallel', action='store_true',
-                        help='Flag indicating that the feedback should be '
-                             'optimized simultaneously with the forward '
-                             'parameters for each minibatch. If false, first'
+    tgroup.add_argument('--train_separate', action='store_true',
+                        help='Flag indicating that first'
                              'the feedback parameters are trained on a whole'
                              'epoch, after which the forward parameters are '
                              'trained for a whole epoch like in Lee2015')
+    tgroup.add_argument('--parallel', action='store_true',
+                        help='Depreciated argument. '
+                             'The opposite of "train_separate".')
     tgroup.add_argument('--not_randomized', action='store_true',
-                        help='Flag indicating that the randomized target '
+                        help='Depreciated argument.'
+                             'Flag indicating that the randomized target '
                              'propagation training scheme should not be used.')
+    tgroup.add_argument('--train_randomized', action='store_true',
+                        help='Flag indicating that the randomized target '
+                             'propagation training scheme should be used,'
+                             'where for each minibatch, one layer is selected'
+                             'randomly for updating.')
     tgroup.add_argument('--normalize_lr', action='store_true',
                         help='Flag indicating that we should take the real '
                              'learning rate of the forward parameters to be:'
@@ -183,11 +192,18 @@ def run():
     tgroup.add_argument('--gn_damping_training', type=float, default=0.,
                         help='Thikonov damping used to train the GN network.')
     tgroup.add_argument('--not_randomized_fb', action='store_true',
-                        help='This flag applies for networks that use the '
+                        help='Depreciated argument. '
+                             'This flag applies for networks that use the '
                              'difference reconstruction loss. The flag '
                              'indicates that for each minibatch, all feedback '
                              'parameters should be trained instead of only '
                              'one set of randomly drawn feedback parameters.')
+    tgroup.add_argument('--train_randomized_fb', action='store_true',
+                        help='This flag applies for networks that use the '
+                             'difference reconstruction loss. The flag '
+                             'indicates that for each minibatch, one layer is '
+                             'selected randomly for training the feedback '
+                             'parameters.')
     tgroup.add_argument('--only_train_first_layer', action='store_true',
                         help='Only train the forward parameters of the first '
                              'layer, while freezing all other forward'
@@ -200,8 +216,18 @@ def run():
                         help='take the mnist input values between 0 and 1, '
                              'instead of standardizing them.')
     tgroup.add_argument('--loss_scale', type=float, default=1.,
-                        help='scale the loss by this factor to mitigate '
+                        help='Depreciated. '
+                             'Scale the loss by this factor to mitigate '
                              'numerical problems.')
+    tgroup.add_argument('--only_train_last_two_layers', action='store_true',
+                        help='Only train the last two layers of the '
+                             'network.')
+    tgroup.add_argument('--only_train_last_three_layers', action='store_true',
+                        help='Only train the last three layers of the '
+                             'network.')
+    tgroup.add_argument('--only_train_last_four_layers', action='store_true',
+                        help='Only train the last four layers of the '
+                             'network.')
 
     agroup = parser.add_argument_group('Training options for the '
                                        'Adam optimizer')
@@ -211,7 +237,7 @@ def run():
     agroup.add_argument('--beta2', type=float, default=0.99,
                         help='beta2 training hyperparameter for the adam '
                              'optimizer. Default: %(default)s')
-    agroup.add_argument('--epsilon', type=float, default=1e-4,
+    agroup.add_argument('--epsilon', type=str, default='1e-4',
                         help='epsilon training hyperparameter for the adam '
                              'optimizer. Default: %(default)s')
     agroup.add_argument('--beta1_fb', type=float, default=0.99,
@@ -220,7 +246,7 @@ def run():
     agroup.add_argument('--beta2_fb', type=float, default=0.99,
                         help='beta2 training hyperparameter for the adam '
                              'feedback optimizer. Default: %(default)s')
-    agroup.add_argument('--epsilon_fb', type=float, default=1e-4,
+    agroup.add_argument('--epsilon_fb', type=str, default='1e-4',
                         help='epsilon training hyperparameter for the adam '
                              'feedback optimizer. Default: %(default)s')
 
@@ -229,7 +255,7 @@ def run():
                         # help='Number of hidden layer in the (student) ' +
                         #      'network. Default: %(default)s.')
     sgroup.add_argument('--num_hidden', type=int, metavar='N', default=2,
-                        help='Number of hidden layer in the (student) ' +
+                        help='Number of hidden layer in the ' +
                              'network. Default: %(default)s.')
     sgroup.add_argument('--size_hidden', type=str, metavar='N', default='500',
                         help='Number of units in each hidden layer of the ' +
@@ -243,7 +269,8 @@ def run():
                         help='Number of units of the output'
                              '. Default: %(default)s.')
     sgroup.add_argument('--size_hidden_fb', type=int, metavar='N', default=500,
-                        help='Number of units of the hidden feedback layer (if applicable)'
+                        help='Number of units of the hidden feedback layer '
+                             '(in the DDTP-RHL variants).'
                              '. Default: %(default)s.')
     sgroup.add_argument('--hidden_activation', type=str, default='tanh',
                         choices=['tanh', 'relu', 'linear', 'leakyrelu',
@@ -264,10 +291,13 @@ def run():
     sgroup.add_argument('--no_bias', action='store_true',
                         help='Flag for not using biases in the network.')
     sgroup.add_argument('--network_type', type=str, default='DKDTP',
-                        choices=['DTP', 'LeeDTP', 'DTP2', 'MNDTP', 'MNDTPDR',
-                                 'MNDTP2DR', 'DTPDR', 'DKDTP', 'DKDTP2',
-                                 'DMLPDTP', 'DMLPDTP2', 'DMLPDTP3',
-                                 'BP', 'GN', 'GN2', 'DFA', 'DDTPControl'],
+                        choices=['DTP', 'LeeDTP',
+                                 'DTPDR', 'DKDTP2',
+                                 'DMLPDTP2',
+                                 'BP', 'GN2', 'DFA', 'DDTPControl',
+                                 'DDTPConv', 'DFAConv', 'BPConv',
+                                 'DDTPConvCIFAR',
+                                 'DFAConvCIFAR', 'BPConvCIFAR', 'DDTPConvControlCIFAR'],
                         help='Variant of TP that will be used to train the '
                              'network. See the layer classes for explanations '
                              'of the names. Default: %(default)s.')
@@ -308,7 +338,8 @@ def run():
     mgroup.add_argument('--freeze_BPlayers', action='store_true',
                         help='Flag to freeze the parameters of the output '
                              'layer and the last hidden layer, that normally '
-                             'are trained with BP, to see if DTP transmits '
+                             'are trained with BP in the LeeDTP network, '
+                             'to see if DTP transmits '
                              'useful teaching signals.')
     mgroup.add_argument('--hpsearch', action='store_true',
                         help='Flag indicating that the main script is running '
@@ -401,8 +432,6 @@ def run():
 
     ### Create summary log writer
     curdir = os.path.curdir
-    if not os.path.exists(os.path.join(curdir, 'logs')):
-        os.makedirs(os.path.join(curdir, 'logs'))
     if args.out_dir is None:
         out_dir = os.path.join(curdir, 'logs', )
         args.out_dir = out_dir
@@ -447,6 +476,9 @@ def run():
 
     # Manipulating command line arguments if asked
     args.lr = utils.process_lr(args.lr)
+    args.lr_fb = utils.process_lr(args.lr_fb)
+    args.epsilon_fb = utils.process_lr(args.epsilon_fb)
+    args.epsilon = utils.process_lr(args.epsilon)
     args.size_hidden = utils.process_hdim(args.size_hidden)
     if args.size_mlp_fb == 'None':
         args.size_mlp_fb = None
@@ -468,15 +500,30 @@ def run():
         args.network_type = 'DMLPDTP2'
         args.size_mlp_fb = None
         args.fb_activation = 'linear'
-        args.not_randomized = True
+        args.train_randomized = False
 
-    if args.network_type in ['MNDTPDR', 'MNDTP2DR', 'DTPDR']:
+    if args.network_type == 'DFAConv':
+        args.freeze_fb_weights = True
+        args.network_type = 'DDTPConv'
+        args.fb_activation = 'linear'
+        args.train_randomized = False
+
+
+    if args.network_type == 'DFAConvCIFAR':
+        args.freeze_fb_weights = True
+        args.network_type = 'DDTPConvCIFAR'
+        args.fb_activation = 'linear'
+        args.train_randomized = False
+
+    if args.network_type in ['DTPDR']:
         args.diff_rec_loss = True
     else:
         args.diff_rec_loss = False
 
     if args.network_type in ['DKDTP', 'DKDTP2', 'DMLPDTP', 'DMLPDTP2',
-                             'DMLPDTP3', 'DDTPControl']:
+                             'DDTPControl', 'DDTPConv',
+                             'DDTPConvCIFAR',
+                             'DDTPConvControlCIFAR']:
         args.direct_fb = True
     else:
         args.direct_fb = False
@@ -520,6 +567,7 @@ def run():
     ### Create dataloaders
 
     if args.dataset == 'mnist':
+        #TODO: try different datanormalizations (e.g. between -1 and 1)
         print('### Training on MNIST ###')
         if args.multiple_hpsearch:
             data_dir = '../../../../../data'
@@ -622,6 +670,7 @@ def run():
                                                        num_workers=0)
             val_loader = None
         else:
+            # g_cuda = torch.Generator(device='cuda')
             trainset, valset = torch.utils.data.random_split(trainset_total,
                                                              [45000, 5000])
             train_loader = torch.utils.data.DataLoader(trainset,
@@ -667,7 +716,7 @@ def run():
 
     if args.log_interval is None:
         args.log_interval = max(1, int(len(train_loader)/100))
-        # 100 logpoints per epoch
+        # 100 logpoint per epoch
 
 
     if args.save_logs:
@@ -683,7 +732,7 @@ def run():
 
     ### Train network
     print("train")
-    if args.network_type != 'BP':
+    if not args.network_type in ('BP', 'BPConv'):
         summary = train(args=args,
                         device=device,
                         train_loader=train_loader,
@@ -730,6 +779,7 @@ def run():
 
 
 if __name__ == '__main__':
+    # print(os.getcwd())
     run()
 
 

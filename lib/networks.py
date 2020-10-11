@@ -1,17 +1,17 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 In here, we define classes for fully connected multilayer perceptrons that are
 trained by difference target propagation and its variants
@@ -22,13 +22,15 @@ import torch.nn as nn
 import numpy as np
 import warnings
 from lib.dtp_layers import DTPLayer
-from lib.mndtp_layers import DTP2Layer, MNDTPLayer, MNDTPDRLayer, \
-    MNDTP2DRLayer, DTPDRLayer
+from lib.dtpdrl_layers import DTPDRLLayer
 from tensorboardX import SummaryWriter
 import lib.utils as utils
 from lib.utils import NetworkError
 import pandas as pd
 import torch.nn.functional as F
+
+# TODO: adjust the compute_output_target methods for computing voltage targets
+# instead of rate targets for the networks that use voltage targets
 
 class DTPNetwork(nn.Module):
     """ A multilayer perceptron (MLP) network that will be trained by the
@@ -363,6 +365,30 @@ class DTPNetwork(nn.Module):
                 parameterlist.append(layer.bias)
         return parameterlist
 
+    def get_forward_parameters_last_two_layers(self):
+        parameterlist = []
+        for layer in self.layers[-2:]:
+            parameterlist.append(layer.weights)
+            if layer.bias is not None:
+                parameterlist.append(layer.bias)
+        return parameterlist
+
+    def get_forward_parameters_last_three_layers(self):
+        parameterlist = []
+        for layer in self.layers[-3:]:
+            parameterlist.append(layer.weights)
+            if layer.bias is not None:
+                parameterlist.append(layer.bias)
+        return parameterlist
+
+    def get_forward_parameters_last_four_layers(self):
+        parameterlist = []
+        for layer in self.layers[-4:]:
+            parameterlist.append(layer.weights)
+            if layer.bias is not None:
+                parameterlist.append(layer.bias)
+        return parameterlist
+
     def get_forward_parameter_list_first_layer(self):
         """
         Returns: a list with only the forward parameters of the first layer.
@@ -422,6 +448,20 @@ class DTPNetwork(nn.Module):
         bp_gradients = self.layers[i].compute_bp_update(loss,
                                                         retain_graph)
         gradients = self.layers[i].get_forward_gradients()
+        if utils.contains_nan(bp_gradients[0].detach()):
+            print('bp update contains nan (layer {}):'.format(i))
+            print(bp_gradients[0].detach())
+        if utils.contains_nan(gradients[0].detach()):
+            print('weight update contains nan (layer {}):'.format(i))
+            print(gradients[0].detach())
+        if torch.norm(gradients[0].detach(), p='fro') < 1e-14:
+            print('norm updates approximately zero (layer {}):'.format(i))
+            print(torch.norm(gradients[0].detach(), p='fro'))
+            print(gradients[0].detach())
+        if torch.norm(gradients[0].detach(), p='fro') == 0:
+            print('norm updates exactly zero (layer {}):'.format(i))
+            print(torch.norm(gradients[0].detach(), p='fro'))
+            print(gradients[0].detach())
 
         weights_angle = utils.compute_angle(bp_gradients[0].detach(),
                                             gradients[0])
@@ -499,12 +539,14 @@ class DTPNetwork(nn.Module):
             retain_graph=retain_graph,
             linear=linear
         )
-
+        # print(f"Layer {i}:")
+        # print(torch.mean(target_difference).item())
+        # print(torch.mean(gn_updates).item())
         if self._plots is not None:
             self.td_activation.at[step, i] = torch.mean(target_difference).item()
             self.gn_activation.at[step, i] = torch.mean(gn_updates).item()
 
-
+        # exit()
         gn_activationav = utils.compute_average_batch_angle(target_difference, gn_updates)
         return gn_activationav
 
@@ -695,7 +737,7 @@ class DTPNetwork(nn.Module):
         # if self.update_idx is None, the randomized setting is not used and
         # all the layers have their parameters updated. The angle should thus
         # be computed for all layers
-
+        # print('saving gnt angles')
         if self.update_idx is None:
             layer_indices = range(len(self.layers)-1)
         else:
@@ -705,6 +747,10 @@ class DTPNetwork(nn.Module):
         if isinstance(damping, float):
             damping = [damping for i in range(self.depth)]
         else:
+            # print(damping)
+            # print(len(damping))
+            # print(layer_indices)
+            # print(len(layer_indices))
             assert len(damping) == len(layer_indices)
 
         for i in layer_indices:
@@ -730,6 +776,8 @@ class DTPNetwork(nn.Module):
                 )
 
                 if self._plots is not None:
+                    # print('saving gnt angles')
+                    # print(angles[0].item())
                     self.gnt_angles.at[step, i] = angles[0].item()
 
                 if self.layers[i].bias is not None:
@@ -968,6 +1016,7 @@ class LeeDTPNetwork(nn.Module):
                                       # allowed to change the grad attribute.
             x.requires_grad = True
         x = self.linearlayer(x)
+        #TODO: implement option for other activation functions besides linear
         return x
 
     def backward(self, loss, target_lr, save_target=False):
@@ -1126,97 +1175,16 @@ class LeeDTPNetwork(nn.Module):
         return self.dtpnetwork.get_av_reconstruction_loss()
 
 
-class DTP2Network(DTPNetwork):
-    """ A class for networks which contain DTP2Layers"""
-
-    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
-                   bias, forward_requires_grad, initialization,
-                   fb_activation):
-        """
-        Create the layers of the network and output them as a ModuleList.
-        Args:
-            n_in: input dimension (flattened input assumed)
-            n_hidden: list with hidden layer dimensions
-            n_out: output dimension
-            activation: activation function indicator for the hidden layers
-            output_activation: activation function indicator for the output
-                layer
-            bias: boolean indicating whether the network uses biases or not
-            forward_requires_grad (bool): Flag indicating whether the forward
-            parameters require gradients that can be computed with autograd.
-            This might be needed when comparing the DTP updates with BP updates
-            and GN updates.
-
-        Note that DTP2Layers require that the feedback nonlinearity pairs with
-        the forward nonlinearity of the same layer, instead of the previous
-        layer (as in the case for DTPLayers).
-        """
-        n_all = [n_in] + n_hidden + [n_out]
-        layers = nn.ModuleList()
-        for i in range(1, len(n_all) - 1):
-            layers.append(
-                DTP2Layer(n_all[i - 1], n_all[i], bias=bias,
-                         forward_activation=activation,
-                         feedback_activation=fb_activation,
-                          forward_requires_grad=forward_requires_grad,
-                          initialization=initialization
-                         ))
-        layers.append(DTP2Layer(n_all[-2], n_all[-1], bias=bias,
-                               forward_activation=output_activation,
-                               feedback_activation=output_activation,
-                                forward_requires_grad=forward_requires_grad,
-                                initialization=initialization))
-        return layers
-
-class MNDTPNetwork(DTPNetwork):
-    """ A class for networks which contain MNDTPLayers."""
-
-    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
-                   bias, forward_requires_grad, initialization,
-                   fb_activation):
-        """
-        Create the layers of the network and output them as a ModuleList.
-        Args:
-            n_in: input dimension (flattened input assumed)
-            n_hidden: list with hidden layer dimensions
-            n_out: output dimension
-            activation: activation function indicator for the hidden layers
-            output_activation: activation function indicator for the output
-                layer
-            bias: boolean indicating whether the network uses biases or not
-            forward_requires_grad (bool): Flag indicating whether the forward
-            parameters require gradients that can be computed with autograd.
-            This might be needed when comparing the DTP updates with BP updates
-            and GN updates.
-
-        Note that MNDTPLayers require that the feedback nonlinearity pairs with
-        the forward nonlinearity of the same layer, instead of the previous
-        layer (as in the case for DTPLayers).
-        """
-        n_all = [n_in] + n_hidden + [n_out]
-        layers = nn.ModuleList()
-        for i in range(1, len(n_all) - 1):
-            layers.append(
-                MNDTPLayer(n_all[i - 1], n_all[i], bias=bias,
-                         forward_activation=activation,
-                         feedback_activation=fb_activation,
-                           forward_requires_grad=forward_requires_grad,
-                           initialization=initialization
-                         ))
-        layers.append(MNDTPLayer(n_all[-2], n_all[-1], bias=bias,
-                                forward_activation=output_activation,
-                                feedback_activation=output_activation,
-                                 forward_requires_grad=forward_requires_grad,
-                                 initialization=initialization))
-        return layers
-
-
-class MNDTPDRNetwork(DTPNetwork):
+class DTPDRLNetwork(DTPNetwork):
     """
-    A class for networks that contain MNDTPDRLayers.
+    A class for networks that contain DTPDRLLayers.
+    #FIXME: now the target for the nonlinear output is computed and the path
+        is trained for propagating the nonlinear output target to the hidden
+        layers. I think training will go better if you compute a target for the
+        linear output activation and train the feedback path to map linear
+        output targets towards the hidden layers.
     """
 
-
     def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
                    bias, forward_requires_grad, initialization,
                    fb_activation):
@@ -1234,26 +1202,27 @@ class MNDTPDRNetwork(DTPNetwork):
             parameters require gradients that can be computed with autograd.
             This might be needed when comparing the DTP updates with BP updates
             and GN updates.
+            initialization (str): the initialization method used for the forward
+                and feedback matrices of the layers
+            fb_activation (str): activation function indicator for the feedback
+                path of the hidden layers
 
-        Note that MNDTPLayers require that the feedback nonlinearity pairs with
-        the forward nonlinearity of the same layer, instead of the previous
-        layer (as in the case for DTPLayers).
         """
         n_all = [n_in] + n_hidden + [n_out]
         layers = nn.ModuleList()
         for i in range(1, len(n_all) - 1):
             layers.append(
-                MNDTPDRLayer(n_all[i - 1], n_all[i], bias=bias,
-                           forward_activation=activation,
-                           feedback_activation=fb_activation,
-                             forward_requires_grad=forward_requires_grad,
-                             initialization=initialization
-                           ))
-        layers.append(MNDTPDRLayer(n_all[-2], n_all[-1], bias=bias,
-                                 forward_activation=output_activation,
-                                 feedback_activation=output_activation,
-                                   forward_requires_grad=forward_requires_grad,
-                                   initialization=initialization))
+                DTPDRLLayer(n_all[i - 1], n_all[i], bias=bias,
+                            forward_activation=activation,
+                            feedback_activation=fb_activation,
+                            forward_requires_grad=forward_requires_grad,
+                            initialization=initialization
+                            ))
+        layers.append(DTPDRLLayer(n_all[-2], n_all[-1], bias=bias,
+                                  forward_activation=output_activation,
+                                  feedback_activation=fb_activation,
+                                  forward_requires_grad=forward_requires_grad,
+                                  initialization=initialization))
         return layers
 
     def compute_feedback_gradients(self, i):
@@ -1305,258 +1274,6 @@ class MNDTPDRNetwork(DTPNetwork):
         reconstruction_loss = self.layers[self.reconstruction_loss_index].\
             reconstruction_loss
         return reconstruction_loss
-
-
-class DTPDRNetwork(MNDTPDRNetwork):
-    """
-    A class for networks that contain DTPDRLayers.
-    """
-
-    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
-                   bias, forward_requires_grad, initialization,
-                   fb_activation):
-        """
-        Create the layers of the network and output them as a ModuleList.
-        Args:
-            n_in: input dimension (flattened input assumed)
-            n_hidden: list with hidden layer dimensions
-            n_out: output dimension
-            activation: activation function indicator for the hidden layers
-            output_activation: activation function indicator for the output
-                layer
-            bias: boolean indicating whether the network uses biases or not
-            forward_requires_grad (bool): Flag indicating whether the forward
-            parameters require gradients that can be computed with autograd.
-            This might be needed when comparing the DTP updates with BP updates
-            and GN updates.
-            initialization (str): the initialization method used for the forward
-                and feedback matrices of the layers
-            fb_activation (str): activation function indicator for the feedback
-                path of the hidden layers
-
-        """
-        n_all = [n_in] + n_hidden + [n_out]
-        layers = nn.ModuleList()
-        for i in range(1, len(n_all) - 1):
-            layers.append(
-                DTPDRLayer(n_all[i - 1], n_all[i], bias=bias,
-                           forward_activation=activation,
-                           feedback_activation=fb_activation,
-                           forward_requires_grad=forward_requires_grad,
-                           initialization=initialization
-                           ))
-        layers.append(DTPDRLayer(n_all[-2], n_all[-1], bias=bias,
-                                 forward_activation=output_activation,
-                                 feedback_activation=fb_activation,
-                                 forward_requires_grad=forward_requires_grad,
-                                 initialization=initialization))
-        return layers
-
-
-class MNDTP2DRNetwork(MNDTPDRNetwork):
-    """
-    A class for networks that uses voltage targets instead of rate targets and
-    that trains its feedback parameters based on the difference reconstruction
-    loss in the linear (voltage) domain (check p 19 of the theoretical
-    framework).
-
-    """
-
-    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
-                   bias, forward_requires_grad, initialization,
-                   fb_activation):
-        """
-        Create the layers of the network and output them as a ModuleList.
-        Args:
-            n_in: input dimension (flattened input assumed)
-            n_hidden: list with hidden layer dimensions
-            n_out: output dimension
-            activation: activation function indicator for the hidden layers
-            output_activation: activation function indicator for the output
-                layer
-            bias: boolean indicating whether the network uses biases or not
-            forward_requires_grad (bool): Flag indicating whether the forward
-            parameters require gradients that can be computed with autograd.
-            This might be needed when comparing the DTP updates with BP updates
-            and GN updates.
-
-        Note that MNDTP2DRLayers require that the feedback nonlinearity pairs with
-        the forward nonlinearity of the previous layer, instead of the same
-        layer (as in the case for MNDTPLayers and MNDTPDRLayers).
-        """
-        n_all = [n_in] + n_hidden + [n_out]
-        layers = nn.ModuleList()
-        for i in range(1, len(n_all) - 1):
-            layers.append(
-                MNDTP2DRLayer(n_all[i - 1], n_all[i], bias=bias,
-                             forward_activation=activation,
-                             feedback_activation=fb_activation,
-                              forward_requires_grad=forward_requires_grad,
-                              initialization=initialization
-                             ))
-        layers.append(MNDTP2DRLayer(n_all[-2], n_all[-1], bias=bias,
-                                   forward_activation=output_activation,
-                                   feedback_activation=activation,
-                                   forward_requires_grad=forward_requires_grad,
-                                    initialization=initialization))
-        return layers
-
-    def compute_output_target(self, loss, target_lr, retain_graph=False):
-        """
-        Compute the output target for the linear activation of the output
-        layer.
-        Args:
-            loss (nn.Module): output loss of the network
-            target_lr: the learning rate for computing the output target based
-                on the gradient of the loss w.r.t. the linear activation
-                of the output layer
-
-        Returns: Mini-batch of output targets
-        """
-        output_activations = self.layers[-1].activations
-        gradient = torch.autograd.grad(
-            loss, output_activations,
-            retain_graph=(self.forward_requires_grad or retain_graph))[
-            0].detach()
-
-        output_targets = output_activations - \
-                         target_lr * gradient
-
-        if self.layers[-1].forward_activation == 'linear':
-            output_targets = output_targets
-
-        elif self.layers[-1].forward_activation == 'sigmoid':
-            output_targets = utils.logit(output_targets)  #apply inverse sigmoid
-
-        else:
-            warnings.warn('Forward activation {} not implemented yet.'.format(
-                self.layers[-1].forward_activation))
-
-        return output_targets
-
-    def propagate_backward(self, a_target, i):
-        """
-        Propagate the output target backwards to layer i in a DTP-like fashion.
-        Args:
-            a_target (torch.Tensor): the output target
-            i: the layer index to which the target must be propagated
-
-        Returns: the target in the linear domain for layer i
-
-        """
-        for k in range(self.depth-1, i, -1):
-            a_current = self.layers[k].linearactivations
-            a_previous = self.layers[k-1].linearactivations
-            a_target = self.layers[k].backward(a_target, a_previous, a_current)
-
-        return a_target
-
-    def backward_random(self, loss, target_lr, i, norm_ratio=1.,
-                        save_target=False):
-        """ Propagate the output target backwards through the network until
-        layer i. Based on this target, compute the gradient of the forward
-        weights and bias of layer i and save them in the parameter tensors.
-        Args:
-            loss (nn.Module): output loss of the network
-            target_lr: the learning rate for computing the output target based
-                on the gradient of the loss w.r.t. the output layer
-            i: layer index to which the target needs to be propagated and the
-                gradients need to be computed
-            norm_ratio (float): The ratio between the regularizer of the norm of
-            forward weights and the regularizer of the norm of the forward bias.
-            See the tau/gamma ratio in theorem 3 of the theoretical framework.
-            save_target (bool): flag indicating whether the target should be
-                saved in the layer object for later use.
-        """
-        self.update_idx = i
-
-        a_target = self.compute_output_target(loss, target_lr)
-        a_target = self.propagate_backward(a_target, i)
-        if save_target:
-            self.layers[i].target = a_target
-
-        if i == 0:  # first hidden layer needs to have the input
-            # for computing gradients
-            self.layers[i].compute_forward_gradients(a_target, self.input,
-                                                     norm_ratio=norm_ratio)
-        else:
-            self.layers[i].compute_forward_gradients(
-                a_target, self.layers[i - 1].activations, norm_ratio=norm_ratio)
-
-    def dummy_forward_linear(self, a, i):
-        """
-        Propagates the linear activations a of layer i forward to the linear
-        output of the
-        network, without saving activations and linear activations in the layer
-        objects.
-        Args:
-            a (torch.Tensor): linear activations of layer i
-            i (int): index of the layer of which a are the activations
-
-        Returns: output of the network with h as activation for layer i
-
-        """
-        y = a
-        y = self.layers[i].forward_activationfunction(y)
-
-        for layer in self.layers[i+1:-1]:
-            y = layer.dummy_forward(y)
-        y = self.layers[-1].dummy_forward_linear(y)
-
-        return y
-
-    def compute_feedback_gradients(self, i):
-        """
-        Compute the difference reconstruction loss for layer i of the network
-        and compute the gradient of this loss with respect to the feedback
-        parameters. The gradients are saved in the .grad attribute of the
-        feedback parameter tensors. The difference reconstruction loss is
-        computed in the linear (voltage) domain.
-
-        """
-        # save the index of the layer for which the reconstruction loss is
-        # computed.
-        self.reconstruction_loss_index = i
-
-        a_corrupted = self.layers[i - 1].linearactivations + \
-                      self.sigma * torch.randn_like(
-            self.layers[i - 1].linearactivations)
-        output_corrupted = self.dummy_forward_linear(a_corrupted, i - 1)
-        a_current_reconstructed = self.propagate_backward(output_corrupted, i)
-        self.layers[i].compute_feedback_gradients(a_corrupted,
-                                                  a_current_reconstructed,
-                                                  self.layers[i-1].\
-                                                  linearactivations,
-                                                  self.sigma)
-
-    def compute_gn_activation_angle(self, output_activation, loss,
-                                    damping, i, step,
-                                    retain_graph=False,
-                                    linear=False):
-        return super().compute_gn_activation_angle(
-            output_activation=output_activation,
-                                            loss=loss,
-                                            damping=damping,
-                                            i=i,
-                                            step=step,
-                                            retain_graph=retain_graph,
-                                            linear=True)
-
-    def compute_bp_activation_angle(self, loss, i, retain_graph=False,
-                                    linear=False):
-        return super().compute_bp_activation_angle(loss=loss, i=i,
-                                            retain_graph=retain_graph,
-                                            linear=True)
-
-    def compute_gnt_angle(self, output_activation, loss, damping,
-                          i, step, retain_graph=False, linear=False):
-        return super().compute_gnt_angle(output_activation=output_activation,
-                                         loss=loss,
-                                         damping=damping,
-                                         i=i,
-                                         step=step,
-                                         retain_graph=retain_graph,
-                                         linear=True)
 
 
 class BPNetwork(nn.Module):
@@ -1632,94 +1349,8 @@ class BPNetwork(nn.Module):
         for param in self.parameters():
             param.requires_grad = value
 
-class GNNetwork(MNDTP2DRNetwork):
-    """ Network class that computes exact GN updates for the linear layer
-    activations and updates according to the minimal norm update."""
 
-    def __init__(self, n_in, n_hidden, n_out, activation='relu',
-                 output_activation='linear', bias=True, sigma=0.36,
-                 forward_requires_grad=False,
-                 initialization='orthogonal',
-                 fb_activation='relu',
-                 plots=None,
-                 damping=0.):
-        super().__init__(n_in=n_in,
-                         n_hidden=n_hidden,
-                         n_out=n_out,
-                         activation=activation,
-                         output_activation=output_activation,
-                         bias=bias,
-                         sigma=sigma,
-                         forward_requires_grad=forward_requires_grad,
-                         initialization=initialization,
-                         fb_activation=fb_activation,
-                         plots=plots)
-        self._damping = damping
-
-    @property
-    def damping(self):
-        """ Getter for read only attr damping"""
-        return self._damping
-
-    def backward_random(self, loss, target_lr, i,
-                        norm_ratio=1., save_target=False):
-
-        self.update_idx = i
-        output_activation = self.layers[-1].activations
-
-        layer_update = self.layers[i].compute_gn_activation_updates(
-                                      output_activation, loss,
-                                      damping=self.damping,
-                                      retain_graph=self.forward_requires_grad,
-                                      linear=True).detach()
-
-        a_target = self.layers[i].linearactivations - layer_update
-
-        if save_target:
-            self.layers[i].target = a_target
-
-        if i == 0:
-            self.layers[i].compute_forward_gradients(a_target, self.input,
-                                                     norm_ratio=norm_ratio)
-        else:
-            self.layers[i].compute_forward_gradients(a_target,
-                                            self.layers[i-1].activations,
-                                                     norm_ratio=norm_ratio)
-
-    def backward(self, loss, target_lr, save_target=False, norm_ratio=1.):
-        output_activation = self.layers[-1].activations
-        for i in range(self.depth):
-            if i == self.depth -1:
-                retain_graph = self.forward_requires_grad
-            else:
-                retain_graph = True
-
-            layer_update = self.layers[i].compute_gn_activation_updates(
-                            output_activation, loss,
-                            damping=self.damping,
-                            retain_graph=self.forward_requires_grad,
-                            linear=True).detach()
-
-            a_target = self.layers[i].linearactivations - layer_update
-
-            if save_target:
-                self.layers[i].target = a_target
-
-            if i == 0:
-                self.layers[i].compute_forward_gradients(a_target, self.input,
-                                                         norm_ratio=norm_ratio)
-            else:
-                self.layers[i].compute_forward_gradients(a_target,
-                                                         self.layers[
-                                                             i - 1].activations,
-                                                         norm_ratio=norm_ratio)
-
-
-    def compute_feedback_gradients(self):
-        pass
-
-
-class GN2Network(DTPDRNetwork):
+class GNTNetwork(DTPDRLNetwork):
     """ Network that computes exact GN targets for the nonlinear hidden layer
     activations and computes parameter updates using a gradient step on the
     local loss."""
@@ -1804,8 +1435,5 @@ class GN2Network(DTPDRNetwork):
     def compute_feedback_gradients(self):
         pass
 
-
-class FullGNNetwork(nn.Module):
-    pass
 
 

@@ -1,17 +1,17 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 In here, we define classes for fully connected layers in a multilayer perceptron
 network that will be trained by difference target propagation.
@@ -106,6 +106,9 @@ class DTPLayer(nn.Module):
             self._bias = None
             self._feedbackbias = None
 
+        # Initialize the weight matrices following Lee 2015
+        # TODO: try other initializations, such as the special one to mimic
+        # batchnorm
         if initialization == 'orthogonal':
             gain = np.sqrt(6. / (in_features + out_features))
             nn.init.orthogonal_(self._weights, gain=gain)
@@ -369,13 +372,16 @@ class DTPLayer(nn.Module):
             h_target (torch.Tensor): the DTP target of the current layer
             h_previous (torch.Tensor): the rate activation of the previous
                 layer
-            norm_ratio (float): will only be used in children of DTPLayer for
-                the minimal_norm update
+            norm_ratio (float): Depreciated.
         """
 
-        vectorized_jacobians = self.compute_vectorized_jacobian(
-            self.linearactivations)
-        teaching_signal = 2*vectorized_jacobians*(self.activations - h_target)
+        if self.forward_activation == 'linear':
+            teaching_signal = 2 * (self.activations - h_target)
+        else:
+            vectorized_jacobians = self.compute_vectorized_jacobian(
+                self.linearactivations)
+            teaching_signal = 2 * vectorized_jacobians * (
+                    self.activations - h_target)
         batch_size = h_target.shape[0]
         bias_grad = teaching_signal.mean(0)
         weights_grad = 1./batch_size * teaching_signal.t().mm(h_previous)

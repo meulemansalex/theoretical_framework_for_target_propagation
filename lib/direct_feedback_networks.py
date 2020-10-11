@@ -1,10 +1,11 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,26 +13,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from lib.direct_feedback_layers import DirectKernelDTPLayer, DKDTP2Layer, \
-    DMLPDTPLayer, DMLPDTP2Layer, DMLPDTP3Layer, DDTPControlLayer
-from lib.networks import MNDTP2DRNetwork, DTPNetwork
+"""
+In this python file, the network classes for networks with direct feedback
+connections should be implemented.
+"""
+
+from lib.direct_feedback_layers import DDTPRHLLayer, \
+    DDTPMLPLayer, DDTPControlLayer
+from lib.networks import DTPNetwork, DTPDRLNetwork
 import torch
 import torch.nn as nn
 import numpy as np
 from lib.utils import NetworkError
 import pandas as pd
 import warnings
+from lib import utils
 
 
-class DirectKernelDTPNetwork(MNDTP2DRNetwork):
+
+class DDTPRHLNetwork(DTPDRLNetwork):
     """
-    A class for networks that use direct feedback for providing voltage targets
+    A class for networks that use direct feedback for providing targets
     to the hidden layers by using a shared hidden feedback representation.
     It trains its feedback parameters based on the difference reconstruction
-    loss in the linear (voltage) domain (check p 19 of the theoretical
-    framework).
+    loss.
     """
-
     def __init__(self, n_in, n_hidden, n_out, activation='relu',
                  output_activation='linear', bias=True, sigma=0.36,
                  forward_requires_grad=False, hidden_feedback_dimension=500,
@@ -86,12 +92,52 @@ class DirectKernelDTPNetwork(MNDTP2DRNetwork):
             self.bp_activation = pd.DataFrame(columns=[i for i in range(0, self._depth)])
             self.nullspace_relative_norm = pd.DataFrame(
                 columns=[i for i in range(0, self._depth)])
+        #TODO: set the requires_grad attribute of the weight and bias of the
+        # linear layer to False.
         self._hidden_feedback_layer = nn.Linear(n_out,
                                                 hidden_feedback_dimension,
                                                 bias=bias)
         self._hidden_feedback_activation_function = \
             self.set_hidden_feedback_activation(
             hidden_feedback_activation)
+
+    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
+                   bias, forward_requires_grad, hidden_feedback_dimension,
+                   initialization, fb_activation, recurrent_input):
+        """
+        See documentation of DTPNetwork
+
+        """
+        n_all = [n_in] + n_hidden + [n_out]
+        layers = nn.ModuleList()
+        for i in range(1, len(n_all)-1):
+            if i == len(n_all) - 2:
+                hidden_fb_dimension_copy = n_out
+                recurrent_input_copy = False
+            else:
+                hidden_fb_dimension_copy = hidden_feedback_dimension
+                recurrent_input_copy = recurrent_input
+            layers.append(
+                DDTPRHLLayer(n_all[i - 1], n_all[i],
+                             bias=bias,
+                             forward_requires_grad=forward_requires_grad,
+                             forward_activation=activation,
+                             feedback_activation=fb_activation,
+                             hidden_feedback_dimension=hidden_fb_dimension_copy,
+                             initialization=initialization,
+                             recurrent_input=recurrent_input_copy)
+            )
+        layers.append(
+            DDTPRHLLayer(n_all[-2], n_all[-1],
+                         bias=bias,
+                         forward_requires_grad=forward_requires_grad,
+                         forward_activation=output_activation,
+                         feedback_activation=output_activation,
+                         hidden_feedback_dimension=hidden_feedback_dimension,
+                         initialization=initialization,
+                         recurrent_input=recurrent_input)
+        )
+        return layers
 
     def get_feedback_parameter_list(self):
         """
@@ -108,39 +154,7 @@ class DirectKernelDTPNetwork(MNDTP2DRNetwork):
                 parameterlist.append(layer.feedbackbias)
         return parameterlist
 
-    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
-                   bias, forward_requires_grad, hidden_feedback_dimension,
-                   initialization, fb_activation, recurrent_input):
-        """
-        See documentation of DTPNetwork
-
-        """
-        n_all = [n_in] + n_hidden + [n_out]
-        layers = nn.ModuleList()
-        for i in range(1, len(n_all)-1):
-            layers.append(
-                DirectKernelDTPLayer(n_all[i-1], n_all[i],
-                                     bias=bias,
-                                     forward_requires_grad=forward_requires_grad,
-                                     forward_activation=activation,
-                                     feedback_activation=fb_activation,
-                                     hidden_feedback_dimension=hidden_feedback_dimension,
-                                     initialization=initialization,
-                                     recurrent_input=recurrent_input)
-            )
-        layers.append(
-            DirectKernelDTPLayer(n_all[-2], n_all[-1],
-                                 bias=bias,
-                                 forward_requires_grad=forward_requires_grad,
-                                 forward_activation=output_activation,
-                                 feedback_activation=output_activation,
-                                 hidden_feedback_dimension=hidden_feedback_dimension,
-                                 initialization=initialization,
-                                 recurrent_input=recurrent_input)
-        )
-        return layers
-
-    def set_hidden_feedback_activation(self, hidden_feedback_activation, slope=0):
+    def set_hidden_feedback_activation(self, hidden_feedback_activation):
         """ Create an activation function corresponding to the
         given string.
         Args:
@@ -210,7 +224,8 @@ class DirectKernelDTPNetwork(MNDTP2DRNetwork):
                 output_targets
             )
         else:
-            warnings.warn('Forward activation {} not implemented yet.'.format(self.layers[-1].forward_activation))
+            warnings.warn('Forward activation {} not implemented yet.'
+                          .format(self.layers[-1].forward_activation))
 
 
         hidden_feedback_activations = self.hidden_feedback_layer(output_targets)
@@ -218,242 +233,9 @@ class DirectKernelDTPNetwork(MNDTP2DRNetwork):
             hidden_feedback_activations
         )
 
+        # print("hfa:", hidden_feedback_activations.shape)
+
         return hidden_feedback_activations
-
-    def compute_dummy_output_target(self, loss, target_lr, retain_graph=False):
-        """
-
-        Args:
-            loss:
-            target_lr:
-
-        Returns:
-
-        """
-        output_activations = self.layers[-1].activations
-        gradient = torch.autograd.grad(
-            loss, output_activations,
-            retain_graph=(self.forward_requires_grad or retain_graph))[0]\
-            .detach()
-
-        output_targets = output_activations - \
-                         target_lr*gradient
-
-        if self.layers[-1].forward_activation in ['sigmoid', 'linear']:
-            output_targets = self.layers[-1].feedback_activationfunction(
-                output_targets
-            )
-        else:
-            warnings.warn('Forward activation {} not implemented yet.'.format(self.layers[-1].forward_activation))
-
-        return output_targets
-
-    def propagate_backward(self, h_target, i):
-        """
-        Propagate the output target backwards to layer i in a DTP-like fashion.
-        Args:
-            h_target (torch.Tensor): the hidden feedback activation, resulting
-                from the output target
-            i: the layer index to which the target must be propagated
-
-        Returns (torch.Tensor): the target for layer i
-
-        """
-        # feed the output activation (not the output target!) through the
-        # hidden feedback layer to get the DTP correction term
-        a_last = self.layers[-1].linearactivations
-        a_feedback_hidden = self.hidden_feedback_layer(a_last)
-        h_feedback_hidden = self.hidden_feedback_activation_function(
-            a_feedback_hidden
-        )
-        a_target = h_target
-        a_layer_i = self.layers[i].linearactivations
-
-        a_target = self.layers[i].backward(a_target, a_layer_i,
-                                           h_feedback_hidden)
-
-        return a_target
-
-
-    def backward_random(self, loss, target_lr, i, save_target=False,
-                        norm_ratio=1.):
-        """ Propagate the output target backwards through the network until
-        layer i. Based on this target, compute the gradient of the forward
-        weights and bias of layer i and save them in the parameter tensors.
-        Args:
-            last:
-            loss (nn.Module): output loss of the network
-            target_lr: the learning rate for computing the output target based
-                on the gradient of the loss w.r.t. the output layer
-            i: layer index to which the target needs to be propagated and the
-                gradients need to be computed
-            save_target (bool): flag indicating whether the target should be
-                saved in the layer object for later use.
-            norm_ratio (float): used for the minimal norm update (see theory)
-        """
-
-        self.update_idx = i
-
-        if i != self._depth - 1:
-            h_target = self.compute_output_target(loss, target_lr)
-
-            h_target = self.propagate_backward(h_target, i)
-
-            if save_target:
-                self.layers[i].target = h_target
-
-            if i == 0: # first hidden layer needs to have the input
-                       # for computing gradients
-                self.layers[i].compute_forward_gradients(h_target, self.input,
-                                                         norm_ratio=norm_ratio)
-            else:
-                self.layers[i].compute_forward_gradients(h_target,
-                                                     self.layers[i-1].activations,
-                                                         norm_ratio=norm_ratio)
-        else:
-            h_target = self.compute_dummy_output_target(loss, target_lr)
-            if save_target:
-                self.layers[i].target = h_target
-
-            self.layers[i].compute_forward_gradients(h_target,
-                                                     self.layers[i - 1].activations,
-                                                     norm_ratio=norm_ratio)
-
-    def backward(self, loss, target_lr, save_target=False, norm_ratio=1.):
-        """ Compute the targets for all layers and update their forward
-         parameters accordingly. """
-        # First compute the output target, as that is computed in a different
-        # manner from the output target for propagating to the hidden layers.
-        output_target = self.compute_dummy_output_target(loss, target_lr,
-                                                         retain_graph=True)
-        if save_target:
-            self.layers[-1].target = output_target
-
-        self.layers[-1].compute_forward_gradients(output_target,
-                                                 self.layers[-2].activations,
-                                                 norm_ratio=norm_ratio)
-
-        # Then compute the hidden feedback layer activation for the output
-        # target
-        hidden_fb_target = self.compute_output_target(loss, target_lr)
-        self.backward_all(hidden_fb_target, save_target=save_target,
-                          norm_ratio=norm_ratio)
-
-    def backward_all(self, output_target, save_target=False, norm_ratio=1.):
-        """
-        Compute the targets for all hidden layers (not output layer) and
-        update their forward parameters accordingly.
-        """
-        for i in range(self.depth - 1):
-            h_target = self.propagate_backward(output_target, i)
-
-            if save_target:
-                self.layers[i].target = h_target
-
-            if i == 0:  # first hidden layer needs to have the input
-                # for computing gradients
-                self.layers[i].compute_forward_gradients(h_target, self.input,
-                                                         norm_ratio=norm_ratio)
-            else:
-                self.layers[i].compute_forward_gradients(h_target,
-                                                         self.layers[
-                                                             i - 1].activations,
-                                                         norm_ratio=norm_ratio)
-
-    def compute_feedback_gradients(self, i):
-        """
-        Compute the difference reconstruction loss for layer i of the network
-        and compute the gradient of this loss with respect to the feedback
-        parameters (as in pg 18). The gradients are saved in the .grad attribute of the
-        feedback parameter tensors. The difference reconstruction loss is
-        computed in the linear (voltage) domain.
-
-        Implementation:
-        - get the linear activation of layer i
-        - corrupt the linear activation of layer i
-        - propagate the corrupted activation and noncorrupted activation
-          towards the output of the last layer with dummy_forward_linear
-        - compute the rate / post-activation of the hidden output layer for the corrupted
-            sample and the non-corrupted sample
-        - provide the needed arguments to self.layers[i].compute_feedback_
-            gradients
-        Args:
-            i: the layer index of which the feedback matrices should be updated
-
-        Returns:
-
-        """
-        # Save the index of the layer for which the reconstruction loss is computed.
-        self.reconstruction_loss_index = i
-
-        # Corrupt the linear activation of layer i
-        a_corrupted = self.layers[i].linearactivations + \
-                      self.sigma * torch.randn_like(
-            self.layers[i].linearactivations)
-
-        # Propagate it towards the linear output activation with
-        # dummy_forward_linear
-        last_rate_corrupted = self.dummy_forward_linear(a_corrupted, i)
-
-        # Compute the activation of the hidden output layer for the corrupted sample
-        a_fb_hidden_corrupted = self.hidden_feedback_layer(last_rate_corrupted)  # Voltage!
-        h_fb_hidden_corrupted = self.hidden_feedback_activation_function(
-            a_fb_hidden_corrupted
-        )  # Rate!
-
-        # Compute the activation of the hidden output layer for the non-corrupted sample
-        a_noncorrupted = self.layers[i].linearactivations
-        last_rate_noncorrupted = self.dummy_forward_linear(a_noncorrupted, i)
-        a_fb_hidden_noncorrupted = self.hidden_feedback_layer(last_rate_noncorrupted)   # Voltage!
-        h_fb_hidden_noncorrupted = self.hidden_feedback_activation_function(
-            a_fb_hidden_noncorrupted
-        )  # Rate!
-
-        # Provide the needed arguments to self.layers[i].compute_feedback_gradients
-        self.layers[i].compute_feedback_gradients(a_corrupted,
-                                                  h_fb_hidden_corrupted,
-                                                  h_fb_hidden_noncorrupted,
-                                                  self.sigma)
-
-class DKDTP2Network(DirectKernelDTPNetwork):
-    """ Network consisting of DKDTP2 layers."""
-    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
-                   bias, forward_requires_grad, hidden_feedback_dimension,
-                   initialization, fb_activation, recurrent_input):
-        """
-        See documentation of DTPNetwork
-
-        """
-        n_all = [n_in] + n_hidden + [n_out]
-        layers = nn.ModuleList()
-        for i in range(1, len(n_all)-1):
-            if i == len(n_all) - 2:
-                hidden_fb_dimension_copy = n_out
-                recurrent_input_copy = False
-            else:
-                hidden_fb_dimension_copy = hidden_feedback_dimension
-                recurrent_input_copy = recurrent_input
-            layers.append(
-                DKDTP2Layer(n_all[i-1], n_all[i],
-                                     bias=bias,
-                                     forward_requires_grad=forward_requires_grad,
-                                     forward_activation=activation,
-                                     feedback_activation=fb_activation,
-                                     hidden_feedback_dimension=hidden_fb_dimension_copy,
-                                     initialization=initialization,
-                                     recurrent_input=recurrent_input_copy)
-            )
-        layers.append(
-            DKDTP2Layer(n_all[-2], n_all[-1],
-                                 bias=bias,
-                                 forward_requires_grad=forward_requires_grad,
-                                 forward_activation=output_activation,
-                                 feedback_activation=output_activation,
-                                 hidden_feedback_dimension=hidden_feedback_dimension,
-                                 initialization=initialization,
-                                 recurrent_input=recurrent_input)
-        )
-        return layers
 
     def propagate_backward(self, h_target, i):
         """
@@ -485,6 +267,11 @@ class DKDTP2Network(DirectKernelDTPNetwork):
                                                  self.layers[i].activations,
                                                  h_feedback_hidden)
         return h_i_target
+
+    # def propagate_backward_last_hidden_layer(self, output_target, i):
+    #     """ For propagating the output target to the last hidden layer, we
+    #     want to have a simple linear mapping (as the real GN target is also
+    #     a simple linear mapping) instead of using the random hidden layer."""
 
     def compute_feedback_gradients(self, i):
         """
@@ -712,8 +499,9 @@ class DKDTP2Network(DirectKernelDTPNetwork):
         return y
 
 
-class DMLPDTPNetwork(DirectKernelDTPNetwork):
-    """ A class for networks consisting of DMLPDTPLayers."""
+class DDTPMLPNetwork(DDTPRHLNetwork):
+    """ Network class for DDTPMLPLayers"""
+
     def __init__(self, n_in, n_hidden, n_out, activation='relu',
                  output_activation='linear', bias=True, sigma=0.36,
                  forward_requires_grad=False, size_hidden_fb=[100],
@@ -756,129 +544,8 @@ class DMLPDTPNetwork(DirectKernelDTPNetwork):
                 columns=[i for i in range(0, self._depth)])
             self.nullspace_relative_norm = pd.DataFrame(
                 columns=[i for i in range(0, self._depth)])
-
-    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
-                   bias, forward_requires_grad, size_hidden_fb,
-                   initialization, fb_activation, fb_hidden_activation,
-                   recurrent_input):
-        n_all = [n_in] + n_hidden + [n_out]
-        layers = nn.ModuleList()
-        for i in range(1, len(n_all)-1):
-            layers.append(
-                DMLPDTPLayer(n_all[i-1], n_all[i], n_out,
-                             bias=bias,
-                             forward_requires_grad=forward_requires_grad,
-                             forward_activation=activation,
-                             feedback_activation=fb_activation,
-                             size_hidden_fb=size_hidden_fb,
-                             fb_hidden_activation=fb_hidden_activation,
-                             initialization=initialization,
-                             recurrent_input=recurrent_input
-                             )
-            )
-        layers.append(
-            DMLPDTPLayer(n_all[-2], n_all[-1], n_out,
-                         bias=bias,
-                         forward_requires_grad=forward_requires_grad,
-                         forward_activation=output_activation,
-                         feedback_activation=output_activation,
-                         size_hidden_fb=size_hidden_fb,
-                         fb_hidden_activation=fb_hidden_activation,
-                         initialization=initialization,
-                         recurrent_input=recurrent_input,
-                         is_output=True
-                         )
-        )
-        return layers
-
-    def get_feedback_parameter_list(self):
-        parameterlist = []
-        for layer in self.layers[:-1]:
-            parameterlist += [p for p in layer.get_feedback_parameters()]
-
-        return parameterlist
-
-    def compute_output_target(self, loss, target_lr, retain_graph=False):
-        return MNDTP2DRNetwork.compute_output_target(self=self,
-                                              loss=loss,
-                                              target_lr=target_lr,
-                                              retain_graph=retain_graph)
-
-    def propagate_backward(self, output_target, i):
-        """
-        Propagate the linear output target bacwards to layer i with the
-        direct feedback MLP mapping
-        """
-        a_output = self.layers[-1].linearactivations
-        a_layer_i = self.layers[i].linearactivations
-
-        a_target_i = self.layers[i].backward(output_target, a_layer_i,
-                                             a_output)
-
-        return a_target_i
-
-    def backward_random(self, loss, target_lr, i, save_target=False,
-                        norm_ratio=1.):
-        """ Compute and propagate the output target to layer i via
-        direct feedback MLP connection."""
-
-        self.update_idx = i
-
-        if i != self._depth - 1:
-            output_target = self.compute_output_target(loss, target_lr)
-
-            a_target_i = self.propagate_backward(output_target, i)
-
-            if save_target:
-                self.layers[i].target = a_target_i
-
-            if i == 0:
-                self.layers[i].compute_forward_gradients(a_target_i, self.input,
-                                                         norm_ratio=norm_ratio)
-            else:
-                self.layers[i].compute_forward_gradients(a_target_i,
-                                                self.layers[i-1].activations,
-                                                         norm_ratio=norm_ratio)
-
-        else:
-            output_target = self.compute_dummy_output_target(loss, target_lr)
-            a_target_i = output_target
-            if save_target:
-                self.layers[i].target = a_target_i
-
-            self.layers[i].compute_forward_gradients(a_target_i,
-                                                self.layers[i-1].activations,
-                                                     norm_ratio=norm_ratio)
-
-    def compute_dummy_output_target(self, loss, target_lr, retain_graph=False):
-        """ Distinction with compute_output_target method needed for its
-        children (that will overwrite this method)."""
-        return self.compute_output_target(loss, target_lr, retain_graph=
-                                          retain_graph)
-
-    def compute_feedback_gradients(self, i):
-        """ See doc of corresponding method in DirectKernelDTPNetwork."""
-        # Save the index of the layer for which the reconstruction loss is computed.
-        self.reconstruction_loss_index = i
-
-        # Corrupt the linear activation of layer i
-        a_corrupted = self.layers[i].linearactivations + \
-                      self.sigma * torch.randn_like(
-            self.layers[i].linearactivations)
-
-        # Propagate it towards the linear output activation with
-        # dummy_forward_linear
-        output_corrupted = self.dummy_forward_linear(a_corrupted, i)
-        output_noncorrupted = self.layers[-1].linearactivations
-
-        self.layers[i].compute_feedback_gradients(a_corrupted,
-                                                  output_corrupted,
-                                                  output_noncorrupted,
-                                                  self.sigma)
-
-
-class DMLPDTP2Network(DMLPDTPNetwork):
-    """ Network class for DMLPDTP2Layers"""
+        # TODO: set the requires_grad attribute of the weight and bias of the
+        # linear layer to False.
 
     def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
                    bias, forward_requires_grad, size_hidden_fb,
@@ -896,7 +563,7 @@ class DMLPDTP2Network(DMLPDTPNetwork):
                 recurrent_input_copy = recurrent_input
                 bias_copy = bias
             layers.append(
-                DMLPDTP2Layer(n_all[i - 1], n_all[i], n_out,
+                DDTPMLPLayer(n_all[i - 1], n_all[i], n_out,
                              bias=bias_copy,
                              forward_requires_grad=forward_requires_grad,
                              forward_activation=activation,
@@ -908,7 +575,7 @@ class DMLPDTP2Network(DMLPDTPNetwork):
                              )
             )
         layers.append(
-            DMLPDTP2Layer(n_all[-2], n_all[-1], n_out,
+            DDTPMLPLayer(n_all[-2], n_all[-1], n_out,
                          bias=bias,
                          forward_requires_grad=forward_requires_grad,
                          forward_activation=output_activation,
@@ -920,6 +587,49 @@ class DMLPDTP2Network(DMLPDTPNetwork):
                          )
         )
         return layers
+
+    def get_feedback_parameter_list(self):
+        parameterlist = []
+        for layer in self.layers[:-1]:
+            parameterlist += [p for p in layer.get_feedback_parameters()]
+
+        return parameterlist
+
+    def compute_output_target(self, loss, target_lr, retain_graph=False):
+        """
+        Compute the output target for the linear activation of the output
+        layer.
+        Args:
+            loss (nn.Module): output loss of the network
+            target_lr: the learning rate for computing the output target based
+                on the gradient of the loss w.r.t. the linear activation
+                of the output layer
+            retain_graph: Flag indicating whether the autograd graph should
+                be retained.
+
+        Returns: Mini-batch of output targets
+        """
+        output_activations = self.layers[-1].activations
+        gradient = torch.autograd.grad(
+            loss, output_activations,
+            retain_graph=(self.forward_requires_grad or retain_graph))[
+            0].detach()
+
+        output_targets = output_activations - \
+                         target_lr * gradient
+
+        if self.layers[-1].forward_activation == 'linear':
+            output_targets = output_targets
+
+        elif self.layers[-1].forward_activation == 'sigmoid':
+            output_targets = utils.logit(
+                output_targets)  # apply inverse sigmoid
+
+        else:
+            warnings.warn('Forward activation {} not implemented yet.'.format(
+                self.layers[-1].forward_activation))
+
+        return output_targets
 
     def propagate_backward(self, output_target, i):
         """
@@ -937,8 +647,58 @@ class DMLPDTP2Network(DMLPDTPNetwork):
 
         return h_target_i
 
+    def backward_random(self, loss, target_lr, i, save_target=False,
+                        norm_ratio=1.):
+        """ Compute and propagate the output target to layer i via
+        direct feedback MLP connection."""
+
+        self.update_idx = i
+
+        if i != self._depth - 1:
+            output_target = self.compute_output_target(loss, target_lr)
+
+            h_target_i = self.propagate_backward(output_target, i)
+
+            if save_target:
+                self.layers[i].target = h_target_i
+
+            if i == 0:
+                self.layers[i].compute_forward_gradients(h_target_i, self.input,
+                                                         norm_ratio=norm_ratio)
+            else:
+                self.layers[i].compute_forward_gradients(h_target_i,
+                                                self.layers[i-1].activations,
+                                                         norm_ratio=norm_ratio)
+
+        else:
+            output_target = self.compute_dummy_output_target(loss, target_lr)
+            h_target_i = output_target
+            if save_target:
+                self.layers[i].target = h_target_i
+
+            self.layers[i].compute_forward_gradients(h_target_i,
+                                                self.layers[i-1].activations,
+                                                     norm_ratio=norm_ratio)
+
     def compute_feedback_gradients(self, i):
-        """ See doc of corresponding method in DirectKernelDTPNetwork"""
+        """
+        Compute the difference reconstruction loss for layer i of the network
+        and compute the gradient of this loss with respect to the feedback
+        parameters. The gradients are saved in the .grad attribute of the
+        feedback parameter tensors.
+
+        Implementation:
+        - get the activation of layer i
+        - corrupt the activation of layer i
+        - propagate the corrupted activation and noncorrupted activation
+          towards the output of the last layer with dummy_forward_linear
+        - provide the needed arguments to self.layers[i].compute_feedback_
+            gradients
+        Args:
+            i: the layer index of which the feedback matrices should be updated
+        """
+
+
 
         self.reconstruction_loss_index = i
 
@@ -969,15 +729,15 @@ class DMLPDTP2Network(DMLPDTPNetwork):
         return output_targets
 
     def dummy_forward_linear_output(self, h, i):
-        return DKDTP2Network.dummy_forward_linear_output(self=self,
-                                                  h=h,
-                                                  i=i)
+        return DDTPRHLNetwork.dummy_forward_linear_output(self=self,
+                                                          h=h,
+                                                          i=i)
 
     def compute_gn_activation_angle(self, output_activation, loss,
                                     damping, i, step,
                                     retain_graph=False,
                                     linear=False):
-        return DKDTP2Network.compute_gn_activation_angle(
+        return DDTPRHLNetwork.compute_gn_activation_angle(
             self=self,
             output_activation=output_activation,
             loss=loss,
@@ -989,23 +749,23 @@ class DMLPDTP2Network(DMLPDTPNetwork):
 
     def compute_bp_activation_angle(self, loss, i, retain_graph=False,
                                     linear=False):
-        return DKDTP2Network.compute_bp_activation_angle(self=self,
-                                                      loss=loss, i=i,
-                                                   retain_graph=retain_graph,
-                                                   linear=linear)
+        return DDTPRHLNetwork.compute_bp_activation_angle(self=self,
+                                                          loss=loss, i=i,
+                                                          retain_graph=retain_graph,
+                                                          linear=linear)
 
     def compute_gnt_angle(self, output_activation, loss, damping,
                           i, step, retain_graph=False, linear=False):
-        return DKDTP2Network.compute_gnt_angle(self=self,
-                                               output_activation=output_activation,
-                                               loss=loss,
-                                               damping=damping,
-                                               i=i,
-                                               step=step,
-                                               retain_graph=retain_graph,
-                                               linear=linear)
+        return DDTPRHLNetwork.compute_gnt_angle(self=self,
+                                                output_activation=output_activation,
+                                                loss=loss,
+                                                damping=damping,
+                                                i=i,
+                                                step=step,
+                                                retain_graph=retain_graph,
+                                                linear=linear)
 
-class DDTPControlNetwork(DMLPDTP2Network):
+class DDTPControlNetwork(DDTPMLPNetwork):
     def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
                    bias, forward_requires_grad, size_hidden_fb,
                    initialization, fb_activation, fb_hidden_activation,
@@ -1045,38 +805,4 @@ class DDTPControlNetwork(DMLPDTP2Network):
         )
         return layers
 
-class DMLPDTP3Network(DMLPDTPNetwork):
-    def set_layers(self, n_in, n_hidden, n_out, activation, output_activation,
-                   bias, forward_requires_grad, size_hidden_fb,
-                   initialization, fb_activation, fb_hidden_activation,
-                   recurrent_input):
-        n_all = [n_in] + n_hidden + [n_out]
-        layers = nn.ModuleList()
-        for i in range(1, len(n_all) - 1):
-            layers.append(
-                DMLPDTP3Layer(n_all[i - 1], n_all[i], n_out,
-                             bias=bias,
-                             forward_requires_grad=forward_requires_grad,
-                             forward_activation=activation,
-                             feedback_activation=fb_activation,
-                             size_hidden_fb=size_hidden_fb,
-                             fb_hidden_activation=fb_hidden_activation,
-                             initialization=initialization,
-                             recurrent_input=recurrent_input
-                             )
-            )
-        layers.append(
-            DMLPDTP3Layer(n_all[-2], n_all[-1], n_out,
-                         bias=bias,
-                         forward_requires_grad=forward_requires_grad,
-                         forward_activation=output_activation,
-                         feedback_activation=output_activation,
-                         size_hidden_fb=size_hidden_fb,
-                         fb_hidden_activation=fb_hidden_activation,
-                         initialization=initialization,
-                         recurrent_input=recurrent_input,
-                         is_output=True
-                         )
-        )
-        return layers
 

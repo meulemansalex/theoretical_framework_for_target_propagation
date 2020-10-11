@@ -52,4 +52,5 @@ config = {
 'gn_damping': 0.0,
 'hpsearch': False,
 'log_interval': 80,
+# 'gn_damping_hpsearch': True,
 }

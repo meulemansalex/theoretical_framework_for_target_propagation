@@ -1,10 +1,11 @@
-# Copyright 2020 Alexander Meulemans
+#!/usr/bin/env python3
+# Copyright 2019 Alexander Meulemans
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -68,7 +69,9 @@ def run():
             pickle.dump(result_dict, f)
         figure_utils.save_result_dict(result_dict, result_dict_path)
 
+
     figure_utils.save_dict_to_json(config_collection, os.path.join(result_dict_path, 'config.txt'))
+
 
     # make the plots
     for result_key in result_keys:
